@@ -1,0 +1,29 @@
+{
+  "name": "disaster_mesh",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "client": "tsx src/client.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hemnath-28/Disaster-Mesh.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/hemnath-28/Disaster-Mesh/issues"
+  },
+  "homepage": "https://github.com/hemnath-28/Disaster-Mesh#readme",
+  "dependencies": {
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}
