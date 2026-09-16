@@ -1,25 +1,36 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID } from "crypto";
 import { Message } from "./types";
-
+import {IdentifyMessage,Peer } from "./types"
 const HOST="0.0.0.0"
 const PORT=5000
 
-
 // Change this on each device
-const DEVICE_ID = "NODE-B";
+const DEVICE_ID = randomUUID();
 
 // Optional peer to connect to
 const PEER_IP: string = "10.12.234.137";
 
-//Server Part
-const peers=new Set<WebSocket>()
+// Server Setup
 const server = new WebSocketServer({
     host: HOST,
     port: PORT
 });
 
-console.log("     DisasterMesh Node");
+//Server Part
+const peers=new Map<string,WebSocket>()
+
+// Function to Send Messag to Everyone
+function sendmessage(message:Message){
+    for (const peer of peers.values()){
+        if (peer.readyState===WebSocket.OPEN){
+            peer.send(JSON.stringify(message))
+        }
+    }
+}
+
+
+console.log("DisasterMesh Node");
 console.log(`Device ID: ${DEVICE_ID}`);
 console.log(`Listening on port: ${PORT}`);
 
@@ -29,19 +40,40 @@ server.on("listening",()=>{
 
 server.on("connection", (socket) => {
     console.log("Peer connected");
-    peers.add(socket);
-     console.log("Peers:", peers.size);
+    console.log("Peers:", peers.size);
+    
+    const message: Message = {
+        type: "MESSAGE",
+        messageId: randomUUID(),
+        senderDeviceId: DEVICE_ID,
+        receiverDeviceId: "NODE-B",
+        payload: "Hello from NODE-A!",
+        timestamp: Date.now()
+    };
+    sendmessage(message);
+
 
     socket.on("message", (data) => {
         try {
             const message: Message =
                 JSON.parse(data.toString());
+            // Peer identification
+            if (message.type==="IDENTIFY"){
+                console.log(`peer identified as ${message.deviceId}`);
 
-            console.log("\nMessage received:");
+                peers.set(message.deviceId,socket)
+                return
+            }
+
+
+            if (message.type==="MESSAGE"){
+                console.log("\nMessage received:");
             console.log(`From: ${message.senderDeviceId}`);
             console.log(`To: ${message.receiverDeviceId}`);
             console.log(`Message: ${message.payload}`);
 
+            }
+            
         } catch (error) {
 
             console.log("Invalid message received");
@@ -51,14 +83,29 @@ server.on("connection", (socket) => {
     });
     socket.on("close", () => {
         console.log("Peer disconnected");
-        peers.delete(socket);
+        console.log("Socket disconnected")
+
+        for (const [deviceId,peerSocket] of peers){
+            if (peerSocket==socket){
+                peers.delete(deviceId)
+            }
+            console.log(
+                    `Removed peer: ${deviceId}`);
+                break;
+        }
+        
+       
     });
     socket.on("error", (error) => {
         console.log("Peer socket error:",
             error.message);
-        peers.delete(socket);
-    });
-
+        for (const [deviceId, peerSocket] of peers) {
+            if (peerSocket === socket) {
+                peers.delete(deviceId);
+                break;
+            }
+        }
+});
 });
 
 // All connected Clients
@@ -71,9 +118,14 @@ if (PEER_IP!==""){
     `ws://${PEER_IP}:${PORT}`);
     socket.on("open",()=>{
         console.log(`Connected to peer ${PEER_IP}`,peers);
-
-    console.log("Peers:", peers.size);
-        peers.add(socket)
+        const IdentifyMessage={
+            type:"IDENTIFY",
+            deviceId:DEVICE_ID
+        }
+       
+        console.log("Peers:", peers.size);
+        
+        socket.send(JSON.stringify(IdentifyMessage))
         const message: Message = {
 
                 type: "MESSAGE",
@@ -89,9 +141,7 @@ if (PEER_IP!==""){
                 timestamp: Date.now()
 
             };
-        socket.send(
-                JSON.stringify(message)
-            );
+        sendmessage(message)
     });
     socket.on("message", (data) => {
 
@@ -118,7 +168,6 @@ if (PEER_IP!==""){
 
         console.log("Connection to peer closed");
 
-        peers.delete(socket);
         console.log("peers size:",peers.size)
 
     });

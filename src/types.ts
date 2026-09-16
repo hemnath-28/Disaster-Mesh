@@ -6,3 +6,13 @@ export interface Message {
     payload: string;
     timestamp: number;
 }
+export interface IdentifyMessage {
+    type: "IDENTIFY";
+
+    deviceId: string;
+}
+
+export interface Peer {
+    id: string;
+    socket: WebSocket;
+}
