@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID } from "crypto";
 import { Message } from "./types";
-import {IdentifyMessage,Peer } from "./types"
+import {IdentifyMessage } from "./types"
 const HOST="0.0.0.0"
 const PORT=5000
 
@@ -30,6 +30,14 @@ function sendmessage(message:Message){
 }
 
 
+function sendSpecific(deviceId:string,message:Message){
+    const peer = peers.get(deviceId);
+
+    if (peer && peer.readyState === WebSocket.OPEN) {
+        peer.send(JSON.stringify(message));
+    }
+}
+
 console.log("DisasterMesh Node");
 console.log(`Device ID: ${DEVICE_ID}`);
 console.log(`Listening on port: ${PORT}`);
@@ -42,20 +50,19 @@ server.on("connection", (socket) => {
     console.log("Peer connected");
     console.log("Peers:", peers.size);
     
-    const message: Message = {
-        type: "MESSAGE",
-        messageId: randomUUID(),
-        senderDeviceId: DEVICE_ID,
-        receiverDeviceId: "NODE-B",
-        payload: "Hello from NODE-A!",
-        timestamp: Date.now()
-    };
-    sendmessage(message);
+    
+    const message:IdentifyMessage={
+        type:"IDENTIFY",
+        deviceId:DEVICE_ID
+
+
+    }
+    socket.send(JSON.stringify(message));
 
 
     socket.on("message", (data) => {
         try {
-            const message: Message =
+            const message: Message|IdentifyMessage =
                 JSON.parse(data.toString());
             // Peer identification
             if (message.type==="IDENTIFY"){
@@ -88,10 +95,11 @@ server.on("connection", (socket) => {
         for (const [deviceId,peerSocket] of peers){
             if (peerSocket==socket){
                 peers.delete(deviceId)
-            }
-            console.log(
+                console.log(
                     `Removed peer: ${deviceId}`);
                 break;
+            }
+            
         }
         
        
@@ -102,8 +110,10 @@ server.on("connection", (socket) => {
         for (const [deviceId, peerSocket] of peers) {
             if (peerSocket === socket) {
                 peers.delete(deviceId);
-                break;
+                console.log(`Removed peer: ${deviceId}`);
+            break
             }
+            
         }
 });
 });
@@ -122,7 +132,6 @@ if (PEER_IP!==""){
             type:"IDENTIFY",
             deviceId:DEVICE_ID
         }
-       
         console.log("Peers:", peers.size);
         
         socket.send(JSON.stringify(IdentifyMessage))
@@ -147,9 +156,12 @@ if (PEER_IP!==""){
 
         try {
 
-            const message: Message =
+            const message: Message|IdentifyMessage =
                 JSON.parse(data.toString());
-
+            if (message.type=="IDENTIFY"){
+                peers.set(message.deviceId,socket)
+                return
+            }
             console.log("\nMessage received:");
             console.log(`From: ${message.senderDeviceId}`);
             console.log(`To: ${message.receiverDeviceId}`);

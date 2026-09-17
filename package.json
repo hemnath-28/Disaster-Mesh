@@ -6,7 +6,8 @@
   "scripts": {
     "start": "tsx src/server.ts",
     "client": "tsx src/client.ts",
-    "mesh": "tsx src/node.ts"
+    "mesh": "tsx src/node.ts",
+    "mdns":"tsx src/discovery.ts"
   },
   "repository": {
     "type": "git",
@@ -20,9 +21,11 @@
   },
   "homepage": "https://github.com/hemnath-28/Disaster-Mesh#readme",
   "dependencies": {
+    "multicast-dns": "^7.2.5",
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@types/multicast-dns": "^7.2.4",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"
