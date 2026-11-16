@@ -1,1 +1,5 @@
 phases.txt
+node_modules/
+data/
+*.db
+*.db-journal

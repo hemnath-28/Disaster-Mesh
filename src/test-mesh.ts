@@ -1,11 +1,17 @@
 import { spawn, ChildProcess } from "child_process";
+import fs from "fs";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
 console.log("===================================================================");
-console.log(" Testing Phase 4 (Step 2): Link Failure & Dynamic Self-Healing RERR");
-console.log(" Initial Topology: Node-A (5001) <---> Node-B (5002) <---> Node-C (5003)");
+console.log(" Testing Phase 5: Complete End-to-End Store-and-Forward DTN");
+console.log(" Scenario: Disconnected Recipient -> Cold Restart -> Reconnect Auto-Delivery");
 console.log("===================================================================\n");
+
+// Clean old test database files
+if (fs.existsSync("./data")) {
+    fs.rmSync("./data", { recursive: true, force: true });
+}
 
 function launchNode(port: string, name: string, peerUrl?: string): ChildProcess {
     const args = ["tsx", "src/node.ts", port, name];
@@ -22,63 +28,63 @@ function launchNode(port: string, name: string, peerUrl?: string): ChildProcess 
 }
 
 async function runTest() {
-    // 1. Launch initial 3-node linear chain
-    const nodeA = launchNode("5001", "Node-A");
-    await delay(1200);
+    // -------------------------------------------------------------------------
+    // Phase 5 Stage 1: Send to an offline node & verify SQLite persistence
+    // -------------------------------------------------------------------------
+    console.log("-------------------------------------------------------------------");
+    console.log("Stage 1: Node-A boots ALONE. Sends message to OFFLINE Node-B.");
+    console.log("-------------------------------------------------------------------");
+    let nodeA = launchNode("5001", "Node-A");
+    await delay(1500);
 
-    const nodeB = launchNode("5002", "Node-B", "ws://127.0.0.1:5001");
-    await delay(1200);
+    nodeA.stdin?.write("send Node-B Message_Stored_While_You_Were_Offline\n");
+    await delay(5500); // Wait for discovery timeout (4s) -> stored into SQLite
 
-    const nodeC = launchNode("5003", "Node-C", "ws://127.0.0.1:5002");
-    await delay(2500);
-
-    console.log("\n=======================================================");
-    console.log("Stage 1: Establish Initial Route from Node-A to Node-C via Node-B");
-    console.log("=======================================================");
-    nodeA.stdin?.write("send Node-C Packet_Before_Bridge_Failure\n");
-    await delay(2500);
-
-    console.log("\n=======================================================");
-    console.log("Stage 2: Simulate Bridge Crash! Killing intermediate Node-B...");
-    console.log("=======================================================");
-    nodeB.kill();
-    await delay(2000);
-
-    console.log("\n=======================================================");
-    console.log("Stage 3: Inspect Node-A Routing Table after Node-B failure");
-    console.log("Expected: Route to Node-C (via Node-B) must be INVALIDATED / purged!");
-    console.log("=======================================================");
-    nodeA.stdin?.write("routes\n");
+    console.log("\nChecking Node-A outbox (Should have 1 PENDING message):");
+    nodeA.stdin?.write("outbox\n");
     await delay(1000);
 
-    console.log("\n=======================================================");
-    console.log("Stage 4: Self-Healing with Alternate Path");
-    console.log("Spawn Node-D (5004) bridging Node-A and Node-C directly!");
-    console.log("=======================================================");
-    // Node-D connects to Node-A (5001) and connects to Node-C (5003)
-    const nodeD = launchNode("5004", "Node-D", "ws://127.0.0.1:5001");
+    // -------------------------------------------------------------------------
+    // Phase 5 Stage 2: Cold Crash / Restart of Node-A
+    // -------------------------------------------------------------------------
+    console.log("\n-------------------------------------------------------------------");
+    console.log("Stage 2: COLD RESTART! Killing Node-A and restarting to prove disk durability...");
+    console.log("-------------------------------------------------------------------");
+    nodeA.kill();
     await delay(1500);
-    nodeD.stdin?.write("connect ws://127.0.0.1:5003\n");
-    await delay(2500);
 
-    console.log("\n=======================================================");
-    console.log("Stage 5: Node-A re-sends to Node-C over healed network!");
-    console.log("Expected: Node-A dynamically re-discovers route via Node-D and delivers!");
-    console.log("=======================================================");
-    nodeA.stdin?.write("send Node-C Packet_After_Self_Healing_Via_Node_D\n");
+    // Re-launch Node-A with the same device ID
+    nodeA = launchNode("5001", "Node-A");
+    await delay(1500);
+
+    console.log("\nChecking Node-A outbox after reboot (Must still be in DB!):");
+    nodeA.stdin?.write("outbox\n");
+    await delay(1000);
+
+    // -------------------------------------------------------------------------
+    // Phase 5 Stage 3: Node-B comes ONLINE and connects to Node-A!
+    // -------------------------------------------------------------------------
+    console.log("\n-------------------------------------------------------------------");
+    console.log("Stage 3: Node-B comes ONLINE! Connects to Node-A...");
+    console.log("Expected: Node-A immediately detects Node-B, flushes the queued");
+    console.log("message from SQLite, Node-B delivers it, and Node-A updates to DELIVERED!");
+    console.log("-------------------------------------------------------------------");
+    const nodeB = launchNode("5002", "Node-B", "ws://127.0.0.1:5001");
     await delay(3000);
 
-    console.log("\n=======================================================");
-    console.log("Inspecting Node-A Final Routing Table:");
-    console.log("=======================================================");
-    nodeA.stdin?.write("routes\n");
+    // -------------------------------------------------------------------------
+    // Phase 5 Stage 4: Verify Final Database State
+    // -------------------------------------------------------------------------
+    console.log("\n-------------------------------------------------------------------");
+    console.log("Stage 4: Checking Node-A outbox (Must now be marked [DELIVERED]):");
+    console.log("-------------------------------------------------------------------");
+    nodeA.stdin?.write("outbox\n");
     await delay(1000);
 
     console.log("\nShutting down nodes...");
     nodeA.kill();
-    nodeC.kill();
-    nodeD.kill();
-    console.log("Phase 4 (Step 2) Self-Healing Test Completed Successfully!");
+    nodeB.kill();
+    console.log("Phase 5 Store-and-Forward Verification Complete!");
     process.exit(0);
 }
 

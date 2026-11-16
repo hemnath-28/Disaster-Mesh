@@ -14,6 +14,7 @@ import {
     DiscoveredPeer
 } from "./types.js";
 import { PeerDiscovery } from "./discovery.js";
+import { MessageStore } from "./storage.js";
 
 // Configuration via environment or arguments
 const HOST = process.env.HOST || "0.0.0.0";
@@ -26,7 +27,11 @@ console.log("=========================================");
 console.log(` DisasterMesh Node: ${DEVICE_ID}`);
 console.log(` WebSocket Port:    ${PORT}`);
 console.log(` mDNS Auto-Discovery: ${ENABLE_MDNS ? "ENABLED" : "DISABLED"}`);
+console.log(` Storage (SQLite):   ENABLED (data/store-${DEVICE_ID}.db)`);
 console.log("=========================================");
+
+// Phase 5: Persistent Storage
+const storage = new MessageStore(DEVICE_ID);
 
 // Active connections: deviceId -> WebSocket
 const peers = new Map<string, WebSocket>();
@@ -73,7 +78,9 @@ const stats = {
     acksRelayed: 0,
     droppedDuplicates: 0,
     droppedExpiredTtl: 0,
-    droppedLoops: 0
+    droppedLoops: 0,
+    storedOfflineMessages: 0,
+    flushedOfflineMessages: 0
 };
 
 function isDuplicate(packetKey: string): boolean {
@@ -107,6 +114,9 @@ function updateRoute(destination: string, nextHop: string, hopDistance: number):
             expiresAt: Date.now() + ROUTE_TTL_MS
         });
         console.log(`🗺️ [ROUTING TABLE] Updated route to ${destination} via ${nextHop} (${hopDistance} hops)`);
+
+        // Phase 5 Check: If we have pending offline messages for this destination, notify
+        checkAndFlushPending(destination);
     }
 }
 
@@ -136,6 +146,40 @@ function getValidRoute(destination: string): RouteEntry | undefined {
     }
 
     return route;
+}
+
+// ==================== Phase 5: Storage & Auto-Flush Trigger ====================
+export function checkAndFlushPending(destinationDeviceId: string): void {
+    const pendingMessages = storage.getPendingMessagesFor(destinationDeviceId);
+    if (pendingMessages.length === 0) return;
+
+    const route = getValidRoute(destinationDeviceId);
+    if (!route) return;
+
+    console.log(`\n📦 [STORE & FORWARD] Flushing ${pendingMessages.length} pending offline messages for ${destinationDeviceId} via ${route.nextHop}...`);
+
+    for (const msg of pendingMessages) {
+        stats.flushedOfflineMessages++;
+        storage.markInTransit(msg.messageId);
+
+        // Track ACK for flushed messages
+        const timer = setTimeout(() => {
+            if (pendingAcks.has(msg.messageId)) {
+                pendingAcks.delete(msg.messageId);
+                console.log(`\n⚠️ [ACK TIMEOUT] Stored message ${msg.messageId} unconfirmed; returning to PENDING state in DB\n`);
+                storage.saveMessage(msg, "PENDING");
+            }
+        }, ACK_TIMEOUT_MS);
+
+        pendingAcks.set(msg.messageId, {
+            message: msg,
+            sentAt: Date.now(),
+            timer
+        });
+
+        stats.directedForwarded++;
+        sendDirected(route.nextHop, msg);
+    }
 }
 
 // ==================== WebSocket Server ====================
@@ -214,6 +258,9 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 peers.set(remoteDeviceId, socket);
                 updateRoute(remoteDeviceId, remoteDeviceId, 1);
                 console.log(`[PEER] Identified: ${remoteDeviceId} (${direction}) | Total peers: ${peers.size}`);
+
+                // Phase 5: Check if we have stored messages waiting for this direct neighbor
+                checkAndFlushPending(remoteDeviceId);
                 return;
             }
 
@@ -283,7 +330,7 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 broadcastRouteError(brokenDestinations);
             }
 
-            // Reconnection attempt if configured
+            // Reconnection attempt
             if (originUrl) {
                 setTimeout(() => {
                     if (!peers.has(remoteDeviceId!)) {
@@ -299,7 +346,7 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
     socket.on("error", cleanup);
 }
 
-// ==================== Phase 4 (Step 2): Route Error & Self-Healing Protocol ====================
+// ==================== Phase 4: Route Error & Self-Healing Protocol ====================
 function broadcastRouteError(brokenDestinations: string[]): void {
     stats.routeErrorsOriginated++;
     const rerr: RouteError = {
@@ -348,7 +395,6 @@ function handleRouteError(rerr: RouteError, sourceSocket: WebSocket): void {
         }
     }
 
-    // If we invalidated any routes, propagate RERR further to notify other upstream nodes
     if (invalidatedAny && rerr.ttl > 1) {
         stats.routeErrorsRelayed++;
         const forwardedRerr: RouteError = {
@@ -361,7 +407,7 @@ function handleRouteError(rerr: RouteError, sourceSocket: WebSocket): void {
     }
 }
 
-// ==================== Phase 4: Route Discovery Protocol (RREQ / RREP) ====================
+// ==================== Phase 4 & 5: Route Discovery Protocol (RREQ / RREP) ====================
 function initiateRouteDiscovery(targetDeviceId: string): void {
     if (pendingRouteRequests.has(targetDeviceId)) {
         return;
@@ -384,14 +430,18 @@ function initiateRouteDiscovery(targetDeviceId: string): void {
     console.log(`\n🔍 [ROUTE DISCOVERY] Seeking shortest route to ${targetDeviceId}...`);
     broadcastPacket(rreq);
 
-    // Timeout if no reply
+    // Timeout if no reply: Phase 5 Store-and-Forward
     setTimeout(() => {
         pendingRouteRequests.delete(targetDeviceId);
         if (!getValidRoute(targetDeviceId)) {
             console.log(`⚠️ [ROUTE TIMEOUT] Could not find route to ${targetDeviceId}`);
             const queued = messageWaitQueue.get(targetDeviceId);
-            if (queued) {
-                console.log(`[QUEUE] Dropped ${queued.length} messages for unreachable ${targetDeviceId}`);
+            if (queued && queued.length > 0) {
+                console.log(`💾 [STORE & FORWARD] Persisting ${queued.length} undelivered messages for ${targetDeviceId} into SQLite!`);
+                for (const item of queued) {
+                    stats.storedOfflineMessages++;
+                    storage.saveMessage(item.message, "PENDING");
+                }
                 messageWaitQueue.delete(targetDeviceId);
             }
         }
@@ -410,11 +460,8 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
     }
 
     const previousHop = rreq.routePath[rreq.routePath.length - 1];
-
-    // Reverse Route Learning
     updateRoute(rreq.originDeviceId, previousHop, rreq.hopCount + 1);
 
-    // Check if WE are the target
     if (rreq.targetDeviceId === DEVICE_ID) {
         stats.routeRepliesOriginated++;
         console.log(`🎯 [RREQ TARGET] Route request reached destination (${DEVICE_ID})! Generating RREP.`);
@@ -441,7 +488,6 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
         return;
     }
 
-    // Check TTL and forward RREQ
     if (rreq.ttl <= 1) {
         stats.droppedExpiredTtl++;
         return;
@@ -469,16 +515,13 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
     }
 
     const previousHop = rrep.routePath[rrep.routePath.length - 1];
-
-    // Forward Route Learning
     updateRoute(rrep.targetDeviceId, previousHop, rrep.hopCount + 1);
 
-    // Check if WE are origin node
     if (rrep.originDeviceId === DEVICE_ID) {
         pendingRouteRequests.delete(rrep.targetDeviceId);
         console.log(`\n🎉 [ROUTE DISCOVERED] Established route to ${rrep.targetDeviceId} via ${previousHop} (Total Hops: ${rrep.hopCount + 1})!`);
 
-        // Flush any queued messages
+        // Flush in-memory queue
         const queued = messageWaitQueue.get(rrep.targetDeviceId);
         if (queued && queued.length > 0) {
             console.log(`[QUEUE] Flushing ${queued.length} queued messages to ${rrep.targetDeviceId}...`);
@@ -487,10 +530,12 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
                 dispatchDirectedMessage(item.message);
             }
         }
+
+        // Flush persistent SQLite store-and-forward messages
+        checkAndFlushPending(rrep.targetDeviceId);
         return;
     }
 
-    // Relay RREP back to origin
     if (rrep.ttl <= 1) {
         stats.droppedExpiredTtl++;
         return;
@@ -596,7 +641,7 @@ function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
     }
 }
 
-// ==================== Phase 3 & 4: ACK Forwarding ====================
+// ==================== Phase 3 & 4 & 5: ACK Forwarding ====================
 function sendAck(targetDeviceId: string, ackMessageId: string): void {
     stats.acksOriginated++;
     const ack: AckMessage = {
@@ -639,6 +684,9 @@ function handleAckMessage(ack: AckMessage, sourceSocket: WebSocket): void {
         const pending = pendingAcks.get(ack.ackMessageId);
         const finalRoute = [...currentPath, DEVICE_ID];
 
+        // Phase 5: Update persistent database status to DELIVERED
+        storage.markDelivered(ack.ackMessageId);
+
         if (pending) {
             clearTimeout(pending.timer);
             pendingAcks.delete(ack.ackMessageId);
@@ -648,7 +696,10 @@ function handleAckMessage(ack: AckMessage, sourceSocket: WebSocket): void {
             console.log(`From Recipient: ${ack.senderDeviceId}`);
             console.log(`Round-Trip RTT: ${rttMs}ms`);
             console.log(`ACK Route:      ${finalRoute.join(" -> ")}`);
+            console.log(`Database State: Status updated to DELIVERED`);
             console.log("===========================================\n");
+        } else {
+            console.log(`✅ [ACK CONFIRMED] Stored offline message ${ack.ackMessageId} was delivered to ${ack.senderDeviceId}!`);
         }
         return;
     }
@@ -711,10 +762,13 @@ export function sendMessage(receiverDeviceId: string, payload: string, ttl: numb
     isDuplicate(message.messageId);
 
     if (receiverDeviceId !== "*") {
+        // Save to SQLite database right away with initial PENDING status
+        storage.saveMessage(message, "PENDING");
+
         const timer = setTimeout(() => {
             if (pendingAcks.has(message.messageId)) {
                 pendingAcks.delete(message.messageId);
-                console.log(`\n⚠️ [ACK TIMEOUT] Message ${message.messageId} to ${receiverDeviceId} unconfirmed after ${ACK_TIMEOUT_MS}ms\n`);
+                console.log(`\n⚠️ [ACK TIMEOUT] Message ${message.messageId} to ${receiverDeviceId} unconfirmed; persists in SQLite outbox\n`);
             }
         }, ACK_TIMEOUT_MS);
 
@@ -778,8 +832,10 @@ const rl = readline.createInterface({
 });
 
 console.log("\nCommands:");
-console.log("  send <targetDeviceId|*> <message>  - Send message (intelligent routing)");
+console.log("  send <targetDeviceId|*> <message>  - Send message (intelligent routing & persistent storage)");
 console.log("  routes                             - View routing table");
+console.log("  outbox                             - View persistent message store (SQLite)");
+console.log("  flush                              - Force retry delivery of pending offline messages");
 console.log("  peers                              - List connected neighbors");
 console.log("  stats                              - View mesh statistics");
 console.log("  connect <host:port>                - Manually connect to peer");
@@ -799,6 +855,20 @@ rl.on("line", (line) => {
             console.log(`  Destination: ${dest.padEnd(15)} NextHop: ${entry.nextHop.padEnd(15)} Hops: ${entry.hopDistance} (TTL: ${timeLeft}s)`);
         }
         console.log("=====================================\n");
+    } else if (cmd === "outbox") {
+        const records = storage.getAllStoredRecords();
+        console.log(`\n=== Persistent Message Store (SQLite: ${records.length} records) ===`);
+        for (const r of records) {
+            const dateStr = new Date(r.createdAt).toLocaleTimeString();
+            console.log(`  [${r.status.padEnd(10)}] To: ${r.receiverDeviceId.padEnd(12)} Payload: "${r.payload}" (Retries: ${r.retryCount}, Time: ${dateStr})`);
+        }
+        console.log("=========================================================\n");
+    } else if (cmd === "flush") {
+        const receivers = storage.getAllPendingReceivers();
+        console.log(`\nManual flush for receivers: [${receivers.join(", ")}]`);
+        for (const r of receivers) {
+            checkAndFlushPending(r);
+        }
     } else if (cmd === "peers") {
         console.log(`Connected neighbors (${peers.size}):`);
         for (const [id] of peers.entries()) {
@@ -809,6 +879,8 @@ rl.on("line", (line) => {
         console.log(`Node ID:              ${DEVICE_ID}`);
         console.log(`Active Peers:         ${peers.size}`);
         console.log(`Known Routes:         ${routingTable.size}`);
+        console.log(`Offline Stored Msgs:  ${stats.storedOfflineMessages}`);
+        console.log(`Flushed Stored Msgs:  ${stats.flushedOfflineMessages}`);
         console.log(`Directed Forwards:    ${stats.directedForwarded}`);
         console.log(`Flooded Forwards:     ${stats.floodedForwarded}`);
         console.log(`Route Requests (RREQ):${stats.routeRequestsOriginated}`);
@@ -826,9 +898,10 @@ rl.on("line", (line) => {
         sendMessage(target, payload);
     } else if (cmd === "quit" || cmd === "exit") {
         if (discoveryService) discoveryService.stop();
+        storage.close();
         server.close();
         process.exit(0);
     } else {
-        console.log("Unknown command. Commands: send <target|*> <message> | routes | peers | stats | connect <host:port>");
+        console.log("Unknown command. Commands: send <target|*> <message> | routes | outbox | flush | peers | stats | connect <host:port>");
     }
 });
