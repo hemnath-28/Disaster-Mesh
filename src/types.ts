@@ -23,6 +23,27 @@ export interface AckMessage {
     routePath?: string[];
 }
 
+// Phase 4: Route Discovery Protocol (AODV-inspired)
+export interface RouteRequest {
+    type: "RREQ";
+    requestId: string;
+    originDeviceId: string;     // Node looking for the route
+    targetDeviceId: string;     // Destination node needed
+    hopCount: number;
+    ttl: number;
+    routePath: string[];
+}
+
+export interface RouteReply {
+    type: "RREP";
+    requestId: string;
+    originDeviceId: string;     // Node waiting for the route
+    targetDeviceId: string;     // Destination node found
+    hopCount: number;
+    ttl: number;
+    routePath: string[];        // Full path discovered
+}
+
 export interface IdentifyMessage {
     type: "IDENTIFY";
     deviceId: string;
@@ -34,7 +55,14 @@ export interface HeartbeatMessage {
     timestamp: number;
 }
 
-export type MeshPacket = Message | AckMessage | IdentifyMessage | HeartbeatMessage;
+export type MeshPacket = Message | AckMessage | RouteRequest | RouteReply | IdentifyMessage | HeartbeatMessage;
+
+export interface RouteEntry {
+    destination: string;        // Destination device ID
+    nextHop: string;            // Direct neighbor to forward to
+    hopDistance: number;        // Number of hops to destination
+    expiresAt: number;          // Timestamp when entry expires
+}
 
 export interface DiscoveredPeer {
     deviceId: string;
