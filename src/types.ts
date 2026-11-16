@@ -1,34 +1,34 @@
 import { WebSocket } from "ws";
 
+// ==================== General Mesh & Routing Types ====================
 export interface Message {
     type: "MESSAGE";
     messageId: string;
     senderDeviceId: string;
-    receiverDeviceId: string; // Target device ID, or "*" for broadcast
+    receiverDeviceId: string;
     payload: string;
-    timestamp: number;
-    ttl: number;              // Time-To-Live (hop count limit)
-    hopCount: number;         // Number of times relayed
-    routePath?: string[];     // Trace of device IDs that forwarded the message
-}
-
-export interface AckMessage {
-    type: "ACK";
-    ackMessageId: string;     // Target messageId being acknowledged
-    senderDeviceId: string;   // Device that received the original message
-    receiverDeviceId: string; // Original sender waiting for acknowledgment
     timestamp: number;
     ttl: number;
     hopCount: number;
     routePath?: string[];
 }
 
-// Phase 4: Route Discovery Protocol (AODV-inspired)
+export interface AckMessage {
+    type: "ACK";
+    ackMessageId: string;
+    senderDeviceId: string;
+    receiverDeviceId: string;
+    timestamp: number;
+    ttl: number;
+    hopCount: number;
+    routePath?: string[];
+}
+
 export interface RouteRequest {
     type: "RREQ";
     requestId: string;
-    originDeviceId: string;     // Node looking for the route
-    targetDeviceId: string;     // Destination node needed
+    originDeviceId: string;
+    targetDeviceId: string;
     hopCount: number;
     ttl: number;
     routePath: string[];
@@ -37,19 +37,18 @@ export interface RouteRequest {
 export interface RouteReply {
     type: "RREP";
     requestId: string;
-    originDeviceId: string;     // Node waiting for the route
-    targetDeviceId: string;     // Destination node found
+    originDeviceId: string;
+    targetDeviceId: string;
     hopCount: number;
     ttl: number;
-    routePath: string[];        // Full path discovered
+    routePath: string[];
 }
 
-// Phase 4 (Step 2): Route Error Protocol (RERR) for Link Failures & Self-Healing
 export interface RouteError {
     type: "RERR";
     errorId: string;
-    reporterDeviceId: string;       // Node that detected the broken link
-    unreachableDestinations: string[]; // List of destinations no longer reachable
+    reporterDeviceId: string;
+    unreachableDestinations: string[];
     ttl: number;
     hopCount: number;
     routePath: string[];
@@ -66,13 +65,89 @@ export interface HeartbeatMessage {
     timestamp: number;
 }
 
-export type MeshPacket = Message | AckMessage | RouteRequest | RouteReply | RouteError | IdentifyMessage | HeartbeatMessage;
+// ==================== Phase 6: Emergency & Mesh Hop Proximity Types ====================
+
+/**
+ * Mesh Hop Proximity Location:
+ * Determines victim localization via topology tracing through anchor relays.
+ */
+export interface MeshProximityLocation {
+    landmark?: string;
+    // Anchor node closest to the victim that has known coordinates or post designation
+    anchorDeviceId?: string;
+    // Number of wireless hops from the anchor node
+    hopsFromAnchor: number;
+    // Estimated search radius in meters based on wireless radio hop distance (~75m per hop)
+    estimatedRadiusMeters: number;
+    // Full hop chain trace from victim to rescue base
+    proximityChain: string[];
+}
+
+export type EmergencyType = "TRAPPED" | "MEDICAL" | "SUPPLIES" | "EVACUATION";
+export type EmergencySeverity = "CRITICAL" | "HIGH" | "MODERATE";
+export type EmergencyStatus = "OPEN" | "STANDBY" | "DISPATCHED" | "RESOLVED";
+
+export interface SosAlert {
+    type: "SOS";
+    sosId: string;
+    senderDeviceId: string;
+    emergencyType: EmergencyType;
+    severity: EmergencySeverity;
+    peopleCount: number;
+    description: string;
+    location: MeshProximityLocation;
+    status: EmergencyStatus;
+    timestamp: number;
+    ttl: number;
+    hopCount: number;
+    routePath: string[];
+}
+
+export interface RescueAck {
+    type: "RESCUE_ACK";
+    sosId: string;
+    rescuerDeviceId: string;
+    victimDeviceId: string;
+    status: "DISPATCHED" | "STANDBY" | "RESOLVED";
+    estimatedArrivalTime?: string;
+    instructions: string;
+    timestamp: number;
+    ttl: number;
+    hopCount: number;
+    routePath: string[];
+}
+
+export type HazardType = "FLOOD_SURGE" | "COLLAPSE_RISK" | "SAFE_ZONE" | "AIRDROP";
+
+export interface DisasterBulletin {
+    type: "BULLETIN";
+    bulletinId: string;
+    senderDeviceId: string;
+    hazardType: HazardType;
+    announcement: string;
+    timestamp: number;
+    ttl: number;
+    hopCount: number;
+    routePath: string[];
+}
+
+export type MeshPacket =
+    | Message
+    | AckMessage
+    | RouteRequest
+    | RouteReply
+    | RouteError
+    | IdentifyMessage
+    | HeartbeatMessage
+    | SosAlert
+    | RescueAck
+    | DisasterBulletin;
 
 export interface RouteEntry {
-    destination: string;        // Destination device ID
-    nextHop: string;            // Direct neighbor to forward to
-    hopDistance: number;        // Number of hops to destination
-    expiresAt: number;          // Timestamp when entry expires
+    destination: string;
+    nextHop: string;
+    hopDistance: number;
+    expiresAt: number;
 }
 
 export interface DiscoveredPeer {
