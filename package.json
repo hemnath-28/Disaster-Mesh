@@ -7,7 +7,8 @@
     "start": "tsx src/server.ts",
     "client": "tsx src/client.ts",
     "mesh": "tsx src/node.ts",
-    "mdns":"tsx src/discovery.ts"
+    "mdns": "tsx src/discovery.ts",
+    "test:mesh": "tsx src/test-mesh.ts"
   },
   "repository": {
     "type": "git",

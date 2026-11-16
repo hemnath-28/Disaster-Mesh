@@ -17,7 +17,9 @@ client.on("open", () => {
         senderDeviceId: DEVICE_ID,
         receiverDeviceId: "NODE-A",
         payload: "Hello from NODE-B!",
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        ttl: 5,
+        hopCount: 0
     };
     client.send("Hello from Node B!");
     client.send(JSON.stringify(message));

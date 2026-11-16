@@ -30,7 +30,9 @@ server.on("connection",(socket)=>{
                 senderDeviceId: DeviceId,
                 receiverDeviceId: message.senderDeviceId,
                 payload: `Received your message: ${message.payload}`,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                ttl: 5,
+                hopCount: 0
             };
             socket.send(JSON.stringify(response))
         }
