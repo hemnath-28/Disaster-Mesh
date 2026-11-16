@@ -11,7 +11,13 @@ import {
     IdentifyMessage,
     MeshPacket,
     RouteEntry,
-    DiscoveredPeer
+    DiscoveredPeer,
+    SosAlert,
+    RescueAck,
+    DisasterBulletin,
+    EmergencyType,
+    EmergencySeverity,
+    HazardType
 } from "./types.js";
 import { PeerDiscovery } from "./discovery.js";
 import { MessageStore } from "./storage.js";
@@ -22,33 +28,32 @@ const PORT = parseInt(process.env.PORT || process.argv[2] || "5000", 10);
 const DEVICE_ID = process.env.DEVICE_ID || process.argv[3] || `Node-${randomUUID().substring(0, 5)}`;
 const MANUAL_PEER = process.env.PEER_URL || process.argv[4] || "";
 const ENABLE_MDNS = process.env.ENABLE_MDNS !== "false";
+const IS_RESCUE_BASE = process.env.IS_RESCUE_BASE === "true" || process.argv.includes("--rescue");
 
 console.log("=========================================");
-console.log(` DisasterMesh Node: ${DEVICE_ID}`);
-console.log(` WebSocket Port:    ${PORT}`);
-console.log(` mDNS Auto-Discovery: ${ENABLE_MDNS ? "ENABLED" : "DISABLED"}`);
-console.log(` Storage (SQLite):   ENABLED (data/store-${DEVICE_ID}.db)`);
+console.log(` 🚨 DisasterMesh Crisis Node: ${DEVICE_ID}`);
+console.log(` Role:               ${IS_RESCUE_BASE ? "RESCUE BASE / OPS COMMAND" : "FIELD / VICTIM NODE"}`);
+console.log(` WebSocket Port:     ${PORT}`);
+console.log(` mDNS Auto-Discovery:${ENABLE_MDNS ? "ENABLED" : "DISABLED"}`);
+console.log(` Storage (SQLite):    ENABLED (data/store-${DEVICE_ID}.db)`);
 console.log("=========================================");
 
-// Phase 5: Persistent Storage
+// Phase 5 & 6: Persistent Storage
 const storage = new MessageStore(DEVICE_ID);
 
 // Active connections: deviceId -> WebSocket
 const peers = new Map<string, WebSocket>();
-// Known peer URLs for reconnection
 const knownPeerUrls = new Set<string>();
 
-// ==================== Phase 4: Routing Table & Route Discovery ====================
-// destinationDeviceId -> RouteEntry
+// Routing Table
 const routingTable = new Map<string, RouteEntry>();
-const ROUTE_TTL_MS = 5 * 60 * 1000; // Routes valid for 5 minutes
+const ROUTE_TTL_MS = 5 * 60 * 1000;
 
-// Pending outgoing messages waiting for route discovery: destinationDeviceId -> Array of queued messages
+// Message queues & active discovery
 const messageWaitQueue = new Map<string, Array<{ message: Message; ttl: number }>>();
-// Track active route requests to prevent duplicate broadcasts
 const pendingRouteRequests = new Set<string>();
 
-// Track pending acknowledgments: messageId -> PendingAck
+// Pending ACKs
 interface PendingAck {
     message: Message;
     sentAt: number;
@@ -57,30 +62,27 @@ interface PendingAck {
 const pendingAcks = new Map<string, PendingAck>();
 const ACK_TIMEOUT_MS = 6000;
 
-// Deduplication cache: stores packet key and expiry timestamp
+// Deduplication cache
 const seenPackets = new Map<string, number>();
-const SEEN_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+const SEEN_CACHE_TTL_MS = 2 * 60 * 1000;
 
-// Node Metrics
+// Metrics
 const stats = {
     originatedMessages: 0,
     deliveredMessages: 0,
     relayedMessages: 0,
     directedForwarded: 0,
     floodedForwarded: 0,
-    routeRequestsOriginated: 0,
-    routeRepliesOriginated: 0,
-    routeErrorsOriginated: 0,
-    routeErrorsReceived: 0,
-    routeErrorsRelayed: 0,
-    acksOriginated: 0,
-    acksReceived: 0,
-    acksRelayed: 0,
+    sosOriginated: 0,
+    sosRelayed: 0,
+    sosReceived: 0,
+    rescueAcksSent: 0,
+    rescueAcksReceived: 0,
+    bulletinsSent: 0,
+    bulletinsReceived: 0,
     droppedDuplicates: 0,
     droppedExpiredTtl: 0,
-    droppedLoops: 0,
-    storedOfflineMessages: 0,
-    flushedOfflineMessages: 0
+    droppedLoops: 0
 };
 
 function isDuplicate(packetKey: string): boolean {
@@ -102,10 +104,8 @@ function isDuplicate(packetKey: string): boolean {
     return false;
 }
 
-// Add or update an entry in the routing table
 function updateRoute(destination: string, nextHop: string, hopDistance: number): void {
     const existing = routingTable.get(destination);
-    // Update if no route exists or if new route is strictly shorter
     if (!existing || hopDistance < existing.hopDistance || Date.now() > existing.expiresAt) {
         routingTable.set(destination, {
             destination,
@@ -113,15 +113,11 @@ function updateRoute(destination: string, nextHop: string, hopDistance: number):
             hopDistance,
             expiresAt: Date.now() + ROUTE_TTL_MS
         });
-        console.log(`🗺️ [ROUTING TABLE] Updated route to ${destination} via ${nextHop} (${hopDistance} hops)`);
-
-        // Phase 5 Check: If we have pending offline messages for this destination, notify
         checkAndFlushPending(destination);
     }
 }
 
 function getValidRoute(destination: string): RouteEntry | undefined {
-    // Direct 1-hop neighbor is always a valid 1-hop route
     if (peers.has(destination)) {
         return {
             destination,
@@ -134,13 +130,7 @@ function getValidRoute(destination: string): RouteEntry | undefined {
     const route = routingTable.get(destination);
     if (!route) return undefined;
 
-    if (Date.now() > route.expiresAt) {
-        routingTable.delete(destination);
-        return undefined;
-    }
-
-    // Verify nextHop peer is currently connected
-    if (!peers.has(route.nextHop)) {
+    if (Date.now() > route.expiresAt || !peers.has(route.nextHop)) {
         routingTable.delete(destination);
         return undefined;
     }
@@ -148,7 +138,6 @@ function getValidRoute(destination: string): RouteEntry | undefined {
     return route;
 }
 
-// ==================== Phase 5: Storage & Auto-Flush Trigger ====================
 export function checkAndFlushPending(destinationDeviceId: string): void {
     const pendingMessages = storage.getPendingMessagesFor(destinationDeviceId);
     if (pendingMessages.length === 0) return;
@@ -156,27 +145,8 @@ export function checkAndFlushPending(destinationDeviceId: string): void {
     const route = getValidRoute(destinationDeviceId);
     if (!route) return;
 
-    console.log(`\n📦 [STORE & FORWARD] Flushing ${pendingMessages.length} pending offline messages for ${destinationDeviceId} via ${route.nextHop}...`);
-
     for (const msg of pendingMessages) {
-        stats.flushedOfflineMessages++;
         storage.markInTransit(msg.messageId);
-
-        // Track ACK for flushed messages
-        const timer = setTimeout(() => {
-            if (pendingAcks.has(msg.messageId)) {
-                pendingAcks.delete(msg.messageId);
-                console.log(`\n⚠️ [ACK TIMEOUT] Stored message ${msg.messageId} unconfirmed; returning to PENDING state in DB\n`);
-                storage.saveMessage(msg, "PENDING");
-            }
-        }, ACK_TIMEOUT_MS);
-
-        pendingAcks.set(msg.messageId, {
-            message: msg,
-            sentAt: Date.now(),
-            timer
-        });
-
         stats.directedForwarded++;
         sendDirected(route.nextHop, msg);
     }
@@ -197,14 +167,12 @@ server.on("error", (error) => {
     console.error("[SERVER ERROR]", error.message);
 });
 
-// ==================== WebSocket Peer Connection ====================
 export function connectToPeer(address: string): void {
     let url = address;
     if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
         url = `ws://${url}`;
     }
 
-    // Prevent connecting to self
     if (url.includes(`:${PORT}`) && (url.includes("localhost") || url.includes("127.0.0.1") || url.includes("0.0.0.0"))) {
         return;
     }
@@ -213,12 +181,10 @@ export function connectToPeer(address: string): void {
 
     try {
         const socket = new WebSocket(url);
-
         socket.on("open", () => {
             console.log(`[CLIENT] Connected to peer at ${url}`);
             setupSocketHandlers(socket, "outbound", url);
         });
-
         socket.on("error", (err) => {
             console.log(`[CLIENT ERROR] Connection to ${url} failed: ${err.message}`);
         });
@@ -240,10 +206,8 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
         try {
             const raw = JSON.parse(data.toString()) as MeshPacket;
 
-            // Handle Identification Handshake
             if (raw.type === "IDENTIFY") {
                 remoteDeviceId = raw.deviceId;
-
                 if (remoteDeviceId === DEVICE_ID) {
                     socket.close();
                     return;
@@ -257,14 +221,11 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
 
                 peers.set(remoteDeviceId, socket);
                 updateRoute(remoteDeviceId, remoteDeviceId, 1);
-                console.log(`[PEER] Identified: ${remoteDeviceId} (${direction}) | Total peers: ${peers.size}`);
-
-                // Phase 5: Check if we have stored messages waiting for this direct neighbor
+                console.log(`[PEER] Identified: ${remoteDeviceId} (${direction}) | Active peers: ${peers.size}`);
                 checkAndFlushPending(remoteDeviceId);
                 return;
             }
 
-            // Handle Heartbeats
             if (raw.type === "PING") {
                 const pong: HeartbeatMessage = {
                     type: "PONG",
@@ -276,11 +237,23 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 }
                 return;
             }
-            if (raw.type === "PONG") {
+            if (raw.type === "PONG") return;
+
+            // Phase 6: Emergency SOS Handlers
+            if (raw.type === "SOS") {
+                handleSosAlert(raw as SosAlert, socket);
+                return;
+            }
+            if (raw.type === "RESCUE_ACK") {
+                handleRescueAck(raw as RescueAck, socket);
+                return;
+            }
+            if (raw.type === "BULLETIN") {
+                handleDisasterBulletin(raw as DisasterBulletin, socket);
                 return;
             }
 
-            // Phase 4: Route Discovery Packets
+            // Routing Packets
             if (raw.type === "RREQ") {
                 handleRouteRequest(raw as RouteRequest, socket);
                 return;
@@ -293,14 +266,10 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 handleRouteError(raw as RouteError, socket);
                 return;
             }
-
-            // Handle ACKs
             if (raw.type === "ACK") {
                 handleAckMessage(raw as AckMessage, socket);
                 return;
             }
-
-            // Handle Messages
             if (raw.type === "MESSAGE") {
                 handleMeshMessage(raw as Message, socket);
                 return;
@@ -313,28 +282,23 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
     const cleanup = () => {
         if (remoteDeviceId && peers.get(remoteDeviceId) === socket) {
             peers.delete(remoteDeviceId);
-            console.log(`[PEER] Disconnected: ${remoteDeviceId} | Remaining peers: ${peers.size}`);
+            console.log(`[PEER] Disconnected: ${remoteDeviceId} | Active peers: ${peers.size}`);
 
-            // Self-Healing: Invalidate all routes relying on this lost neighbor
             const brokenDestinations: string[] = [];
             for (const [dest, entry] of routingTable.entries()) {
                 if (entry.nextHop === remoteDeviceId) {
                     routingTable.delete(dest);
                     brokenDestinations.push(dest);
-                    console.log(`🗺️ [ROUTING TABLE] Invalidated route to ${dest} (nextHop ${remoteDeviceId} lost)`);
                 }
             }
 
-            // Broadcast Route Error (RERR) to surviving neighbors
             if (brokenDestinations.length > 0) {
                 broadcastRouteError(brokenDestinations);
             }
 
-            // Reconnection attempt
             if (originUrl) {
                 setTimeout(() => {
                     if (!peers.has(remoteDeviceId!)) {
-                        console.log(`[RECONNECT] Attempting reconnect to ${originUrl}...`);
                         connectToPeer(originUrl);
                     }
                 }, 4000);
@@ -346,9 +310,262 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
     socket.on("error", cleanup);
 }
 
-// ==================== Phase 4: Route Error & Self-Healing Protocol ====================
+// ==================== Phase 6: Emergency SOS & Mesh Hop Proximity Engine ====================
+
+export function broadcastSos(
+    emergencyType: EmergencyType,
+    severity: EmergencySeverity,
+    peopleCount: number,
+    description: string,
+    landmark?: string
+): SosAlert {
+    stats.sosOriginated++;
+
+    const sosAlert: SosAlert = {
+        type: "SOS",
+        sosId: randomUUID(),
+        senderDeviceId: DEVICE_ID,
+        emergencyType,
+        severity,
+        peopleCount,
+        description,
+        location: {
+            landmark: landmark || "Rooftop / Unspecified",
+            anchorDeviceId: DEVICE_ID,
+            hopsFromAnchor: 0,
+            estimatedRadiusMeters: 50,
+            proximityChain: [DEVICE_ID]
+        },
+        status: "OPEN",
+        timestamp: Date.now(),
+        ttl: 10, // Higher TTL for emergency
+        hopCount: 0,
+        routePath: [DEVICE_ID]
+    };
+
+    isDuplicate(`SOS-${sosAlert.sosId}`);
+    storage.saveSosAlert(sosAlert);
+
+    console.log("\n=======================================================");
+    console.log("🚨🚨🚨 EMERGENCY SOS BEACON BROADCASTED 🚨🚨🚨");
+    console.log(`SOS ID:      ${sosAlert.sosId}`);
+    console.log(`Type:        ${sosAlert.emergencyType} | Severity: ${sosAlert.severity}`);
+    console.log(`Victims:     ${sosAlert.peopleCount} person(s)`);
+    console.log(`Landmark:    ${sosAlert.location.landmark}`);
+    console.log(`Description: "${sosAlert.description}"`);
+    console.log("=======================================================\n");
+
+    // Flood network-wide with highest priority
+    broadcastPacket(sosAlert);
+    return sosAlert;
+}
+
+function handleSosAlert(sos: SosAlert, sourceSocket: WebSocket): void {
+    const sosKey = `SOS-${sos.sosId}`;
+    if (isDuplicate(sosKey)) {
+        return;
+    }
+
+    if (sos.routePath.includes(DEVICE_ID)) {
+        stats.droppedLoops++;
+        return;
+    }
+
+    stats.sosReceived++;
+
+    // Calculate Mesh Hop Proximity Localization
+    const currentHops = sos.hopCount + 1;
+    // Each Wi-Fi hop approximates ~75 meters
+    const estimatedRadius = 50 + currentHops * 75;
+    const updatedProximityChain = [...sos.location.proximityChain, DEVICE_ID];
+
+    const updatedSos: SosAlert = {
+        ...sos,
+        ttl: sos.ttl - 1,
+        hopCount: currentHops,
+        routePath: [...sos.routePath, DEVICE_ID],
+        location: {
+            ...sos.location,
+            hopsFromAnchor: currentHops,
+            estimatedRadiusMeters: estimatedRadius,
+            proximityChain: updatedProximityChain
+        }
+    };
+
+    // Store in local triage registry
+    storage.saveSosAlert(updatedSos);
+
+    // Learn reverse route to victim!
+    const previousHop = sos.routePath[sos.routePath.length - 1];
+    updateRoute(sos.senderDeviceId, previousHop, currentHops);
+
+    console.log("\n🚨🚨🚨 [CRITICAL ALERT RECEIVED] 🚨🚨🚨");
+    console.log(`SOS ID:          ${sos.sosId}`);
+    console.log(`Victim Node:     ${sos.senderDeviceId}`);
+    console.log(`Type:            ${sos.emergencyType} (${sos.severity}) | Victims: ${sos.peopleCount}`);
+    console.log(`Landmark:        ${sos.location.landmark}`);
+    console.log(`Description:     "${sos.description}"`);
+    console.log(`📍 Mesh Proximity: ${currentHops} hop(s) away (~${estimatedRadius}m search radius)`);
+    console.log(`📍 Topology Trace: ${updatedProximityChain.join(" -> ")}`);
+    console.log("-------------------------------------------------------\n");
+
+    // Relay onward if TTL allows
+    if (updatedSos.ttl > 1) {
+        stats.sosRelayed++;
+        broadcastPacket(updatedSos, sourceSocket);
+    }
+}
+
+export function respondToSos(
+    sosId: string,
+    status: "DISPATCHED" | "STANDBY" | "RESOLVED",
+    instructions: string,
+    eta?: string
+): boolean {
+    const alert = storage.getSosAlert(sosId);
+    if (!alert) {
+        console.log(`❌ SOS ID ${sosId} not found in triage database.`);
+        return false;
+    }
+
+    stats.rescueAcksSent++;
+    storage.updateSosStatus(sosId, status, DEVICE_ID, instructions);
+
+    const rescueAck: RescueAck = {
+        type: "RESCUE_ACK",
+        sosId: sosId,
+        rescuerDeviceId: DEVICE_ID,
+        victimDeviceId: alert.senderDeviceId,
+        status: status,
+        estimatedArrivalTime: eta || "15-20 mins",
+        instructions: instructions,
+        timestamp: Date.now(),
+        ttl: 10,
+        hopCount: 0,
+        routePath: [DEVICE_ID]
+    };
+
+    isDuplicate(`RESCUE_ACK-${sosId}-${status}`);
+
+    console.log("\n=======================================================");
+    console.log(`✅ [RESCUE RESPONSE DISPATCHED] To Victim: ${alert.senderDeviceId}`);
+    console.log(`Status:       ${status}`);
+    console.log(`ETA:          ${rescueAck.estimatedArrivalTime}`);
+    console.log(`Instructions: "${instructions}"`);
+    console.log("=======================================================\n");
+
+    // Try directed forwarding via routing table, fallback to broadcast
+    const route = getValidRoute(alert.senderDeviceId);
+    if (route) {
+        sendDirected(route.nextHop, rescueAck);
+    } else {
+        broadcastPacket(rescueAck);
+    }
+
+    return true;
+}
+
+function handleRescueAck(ack: RescueAck, sourceSocket: WebSocket): void {
+    const ackKey = `RESCUE_ACK-${ack.sosId}-${ack.status}`;
+    if (isDuplicate(ackKey)) return;
+
+    if (ack.routePath.includes(DEVICE_ID)) {
+        stats.droppedLoops++;
+        return;
+    }
+
+    stats.rescueAcksReceived++;
+    storage.updateSosStatus(ack.sosId, ack.status, ack.rescuerDeviceId, ack.instructions);
+
+    // If WE are the victim node
+    if (ack.victimDeviceId === DEVICE_ID) {
+        console.log("\n=======================================================");
+        console.log("🔔🔔🔔 RESCUE TEAM CONFIRMATION RECEIVED! 🔔🔔🔔");
+        console.log(`Rescuer Unit: ${ack.rescuerDeviceId}`);
+        console.log(`Status:       ${ack.status} (HELP IS ON THE WAY!)`);
+        console.log(`ETA:          ${ack.estimatedArrivalTime}`);
+        console.log(`Instructions: "${ack.instructions}"`);
+        console.log(`Route Taken:  ${[...ack.routePath, DEVICE_ID].join(" -> ")}`);
+        console.log("=======================================================\n");
+        return;
+    }
+
+    // Relay back to victim
+    if (ack.ttl <= 1) return;
+
+    const relayedAck: RescueAck = {
+        ...ack,
+        ttl: ack.ttl - 1,
+        hopCount: ack.hopCount + 1,
+        routePath: [...ack.routePath, DEVICE_ID]
+    };
+
+    const route = getValidRoute(relayedAck.victimDeviceId);
+    if (route) {
+        sendDirected(route.nextHop, relayedAck);
+    } else {
+        broadcastPacket(relayedAck, sourceSocket);
+    }
+}
+
+export function broadcastBulletin(hazardType: HazardType, announcement: string): DisasterBulletin {
+    stats.bulletinsSent++;
+    const bulletin: DisasterBulletin = {
+        type: "BULLETIN",
+        bulletinId: randomUUID(),
+        senderDeviceId: DEVICE_ID,
+        hazardType,
+        announcement,
+        timestamp: Date.now(),
+        ttl: 10,
+        hopCount: 0,
+        routePath: [DEVICE_ID]
+    };
+
+    isDuplicate(`BULLETIN-${bulletin.bulletinId}`);
+    storage.saveBulletin(bulletin);
+
+    console.log("\n⚠️⚠️⚠️ [PUBLIC HAZARD BULLETIN BROADCASTED] ⚠️⚠️⚠️");
+    console.log(`Hazard:       ${hazardType}`);
+    console.log(`Announcement: "${announcement}"`);
+    console.log("===================================================\n");
+
+    broadcastPacket(bulletin);
+    return bulletin;
+}
+
+function handleDisasterBulletin(bulletin: DisasterBulletin, sourceSocket: WebSocket): void {
+    const key = `BULLETIN-${bulletin.bulletinId}`;
+    if (isDuplicate(key)) return;
+
+    if (bulletin.routePath.includes(DEVICE_ID)) {
+        stats.droppedLoops++;
+        return;
+    }
+
+    stats.bulletinsReceived++;
+    storage.saveBulletin(bulletin);
+
+    console.log("\n⚠️⚠️⚠️ [COMMUNITY DISASTER WARNING] ⚠️⚠️⚠️");
+    console.log(`Issued By:    ${bulletin.senderDeviceId}`);
+    console.log(`Hazard:       ${bulletin.hazardType}`);
+    console.log(`Announcement: "${bulletin.announcement}"`);
+    console.log(`Hops Away:    ${bulletin.hopCount + 1}`);
+    console.log("==========================================\n");
+
+    if (bulletin.ttl > 1) {
+        const relayed: DisasterBulletin = {
+            ...bulletin,
+            ttl: bulletin.ttl - 1,
+            hopCount: bulletin.hopCount + 1,
+            routePath: [...bulletin.routePath, DEVICE_ID]
+        };
+        broadcastPacket(relayed, sourceSocket);
+    }
+}
+
+// ==================== General Mesh & Routing Handlers ====================
 function broadcastRouteError(brokenDestinations: string[]): void {
-    stats.routeErrorsOriginated++;
     const rerr: RouteError = {
         type: "RERR",
         errorId: randomUUID(),
@@ -358,114 +575,41 @@ function broadcastRouteError(brokenDestinations: string[]): void {
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
-
     isDuplicate(`RERR-${rerr.errorId}`);
-    console.log(`💥 [RERR ORIGINATED] Announcing broken link for destinations: [${brokenDestinations.join(", ")}]`);
     broadcastPacket(rerr);
 }
 
 function handleRouteError(rerr: RouteError, sourceSocket: WebSocket): void {
-    const rerrKey = `RERR-${rerr.errorId}`;
-    if (isDuplicate(rerrKey)) {
-        return;
-    }
+    if (isDuplicate(`RERR-${rerr.errorId}`) || rerr.routePath.includes(DEVICE_ID)) return;
 
-    if (rerr.routePath.includes(DEVICE_ID)) {
-        stats.droppedLoops++;
-        return;
-    }
-
-    stats.routeErrorsReceived++;
     const previousHop = rerr.routePath[rerr.routePath.length - 1];
-    let invalidatedAny = false;
+    let invalidated = false;
 
-    // Purge any routes where our nextHop is the node that sent the RERR
-    for (const unreachableDest of rerr.unreachableDestinations) {
-        const entry = routingTable.get(unreachableDest);
+    for (const dest of rerr.unreachableDestinations) {
+        const entry = routingTable.get(dest);
         if (entry && entry.nextHop === previousHop) {
-            routingTable.delete(unreachableDest);
-            invalidatedAny = true;
-            console.log(`💥 [RERR RECEIVED] Invalidated route to ${unreachableDest} via ${previousHop}`);
-
-            // Self-Healing: Trigger immediate re-discovery for active pending communications
-            if (pendingAcks.size > 0 || (messageWaitQueue.get(unreachableDest)?.length ?? 0) > 0) {
-                console.log(`🔄 [SELF-HEALING] Re-initiating discovery for lost destination ${unreachableDest}...`);
-                initiateRouteDiscovery(unreachableDest);
-            }
+            routingTable.delete(dest);
+            invalidated = true;
         }
     }
 
-    if (invalidatedAny && rerr.ttl > 1) {
-        stats.routeErrorsRelayed++;
-        const forwardedRerr: RouteError = {
+    if (invalidated && rerr.ttl > 1) {
+        broadcastPacket({
             ...rerr,
             ttl: rerr.ttl - 1,
             hopCount: rerr.hopCount + 1,
             routePath: [...rerr.routePath, DEVICE_ID]
-        };
-        broadcastPacket(forwardedRerr, sourceSocket);
+        }, sourceSocket);
     }
-}
-
-// ==================== Phase 4 & 5: Route Discovery Protocol (RREQ / RREP) ====================
-function initiateRouteDiscovery(targetDeviceId: string): void {
-    if (pendingRouteRequests.has(targetDeviceId)) {
-        return;
-    }
-
-    pendingRouteRequests.add(targetDeviceId);
-    stats.routeRequestsOriginated++;
-
-    const rreq: RouteRequest = {
-        type: "RREQ",
-        requestId: randomUUID(),
-        originDeviceId: DEVICE_ID,
-        targetDeviceId: targetDeviceId,
-        hopCount: 0,
-        ttl: 5,
-        routePath: [DEVICE_ID]
-    };
-
-    isDuplicate(`RREQ-${rreq.requestId}`);
-    console.log(`\n🔍 [ROUTE DISCOVERY] Seeking shortest route to ${targetDeviceId}...`);
-    broadcastPacket(rreq);
-
-    // Timeout if no reply: Phase 5 Store-and-Forward
-    setTimeout(() => {
-        pendingRouteRequests.delete(targetDeviceId);
-        if (!getValidRoute(targetDeviceId)) {
-            console.log(`⚠️ [ROUTE TIMEOUT] Could not find route to ${targetDeviceId}`);
-            const queued = messageWaitQueue.get(targetDeviceId);
-            if (queued && queued.length > 0) {
-                console.log(`💾 [STORE & FORWARD] Persisting ${queued.length} undelivered messages for ${targetDeviceId} into SQLite!`);
-                for (const item of queued) {
-                    stats.storedOfflineMessages++;
-                    storage.saveMessage(item.message, "PENDING");
-                }
-                messageWaitQueue.delete(targetDeviceId);
-            }
-        }
-    }, 4000);
 }
 
 function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
-    const rreqKey = `RREQ-${rreq.requestId}`;
-    if (isDuplicate(rreqKey)) {
-        return;
-    }
-
-    if (rreq.routePath.includes(DEVICE_ID)) {
-        stats.droppedLoops++;
-        return;
-    }
+    if (isDuplicate(`RREQ-${rreq.requestId}`) || rreq.routePath.includes(DEVICE_ID)) return;
 
     const previousHop = rreq.routePath[rreq.routePath.length - 1];
     updateRoute(rreq.originDeviceId, previousHop, rreq.hopCount + 1);
 
     if (rreq.targetDeviceId === DEVICE_ID) {
-        stats.routeRepliesOriginated++;
-        console.log(`🎯 [RREQ TARGET] Route request reached destination (${DEVICE_ID})! Generating RREP.`);
-
         const rrep: RouteReply = {
             type: "RREP",
             requestId: rreq.requestId,
@@ -475,12 +619,9 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
             ttl: 5,
             routePath: [DEVICE_ID]
         };
-
         isDuplicate(`RREP-${rrep.requestId}-${rrep.targetDeviceId}`);
-
         const reverseRoute = getValidRoute(rreq.originDeviceId);
         if (reverseRoute) {
-            console.log(`📨 [RREP SENT] Sending reply back to ${rreq.originDeviceId} via nextHop: ${reverseRoute.nextHop}`);
             sendDirected(reverseRoute.nextHop, rrep);
         } else {
             sendDirected(previousHop, rrep);
@@ -488,165 +629,114 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
         return;
     }
 
-    if (rreq.ttl <= 1) {
-        stats.droppedExpiredTtl++;
-        return;
-    }
-
-    const forwardedRreq: RouteRequest = {
+    if (rreq.ttl <= 1) return;
+    broadcastPacket({
         ...rreq,
         ttl: rreq.ttl - 1,
         hopCount: rreq.hopCount + 1,
         routePath: [...rreq.routePath, DEVICE_ID]
-    };
-
-    broadcastPacket(forwardedRreq, sourceSocket);
+    }, sourceSocket);
 }
 
 function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
-    const rrepKey = `RREP-${rrep.requestId}-${rrep.targetDeviceId}`;
-    if (isDuplicate(rrepKey)) {
-        return;
-    }
-
-    if (rrep.routePath.includes(DEVICE_ID)) {
-        stats.droppedLoops++;
-        return;
-    }
+    if (isDuplicate(`RREP-${rrep.requestId}-${rrep.targetDeviceId}`) || rrep.routePath.includes(DEVICE_ID)) return;
 
     const previousHop = rrep.routePath[rrep.routePath.length - 1];
     updateRoute(rrep.targetDeviceId, previousHop, rrep.hopCount + 1);
 
     if (rrep.originDeviceId === DEVICE_ID) {
         pendingRouteRequests.delete(rrep.targetDeviceId);
-        console.log(`\n🎉 [ROUTE DISCOVERED] Established route to ${rrep.targetDeviceId} via ${previousHop} (Total Hops: ${rrep.hopCount + 1})!`);
-
-        // Flush in-memory queue
         const queued = messageWaitQueue.get(rrep.targetDeviceId);
-        if (queued && queued.length > 0) {
-            console.log(`[QUEUE] Flushing ${queued.length} queued messages to ${rrep.targetDeviceId}...`);
+        if (queued) {
             messageWaitQueue.delete(rrep.targetDeviceId);
-            for (const item of queued) {
-                dispatchDirectedMessage(item.message);
-            }
+            for (const item of queued) dispatchDirectedMessage(item.message);
         }
-
-        // Flush persistent SQLite store-and-forward messages
         checkAndFlushPending(rrep.targetDeviceId);
         return;
     }
 
-    if (rrep.ttl <= 1) {
-        stats.droppedExpiredTtl++;
-        return;
-    }
-
-    const forwardedRrep: RouteReply = {
+    if (rrep.ttl <= 1) return;
+    const reverseRoute = getValidRoute(rrep.originDeviceId);
+    const forwarded: RouteReply = {
         ...rrep,
         ttl: rrep.ttl - 1,
         hopCount: rrep.hopCount + 1,
         routePath: [...rrep.routePath, DEVICE_ID]
     };
-
-    const reverseRoute = getValidRoute(rrep.originDeviceId);
     if (reverseRoute) {
-        sendDirected(reverseRoute.nextHop, forwardedRrep);
+        sendDirected(reverseRoute.nextHop, forwarded);
     } else {
-        broadcastPacket(forwardedRrep, sourceSocket);
+        broadcastPacket(forwarded, sourceSocket);
     }
 }
 
-// ==================== Phase 4: Directed Next-Hop Forwarding ====================
 function dispatchDirectedMessage(message: Message): void {
     const route = getValidRoute(message.receiverDeviceId);
-
     if (route) {
         stats.directedForwarded++;
-        console.log(`🎯 [DIRECTED FORWARD] Message ${message.messageId} -> Target: ${message.receiverDeviceId} via NextHop: ${route.nextHop} (${route.hopDistance} hops)`);
         sendDirected(route.nextHop, message);
     } else {
-        console.log(`⏳ [ROUTE MISS] No route for ${message.receiverDeviceId}. Queueing message and initiating discovery...`);
         if (!messageWaitQueue.has(message.receiverDeviceId)) {
             messageWaitQueue.set(message.receiverDeviceId, []);
         }
         messageWaitQueue.get(message.receiverDeviceId)!.push({ message, ttl: message.ttl });
-        initiateRouteDiscovery(message.receiverDeviceId);
+
+        if (!pendingRouteRequests.has(message.receiverDeviceId)) {
+            pendingRouteRequests.add(message.receiverDeviceId);
+            broadcastPacket({
+                type: "RREQ",
+                requestId: randomUUID(),
+                originDeviceId: DEVICE_ID,
+                targetDeviceId: message.receiverDeviceId,
+                hopCount: 0,
+                ttl: 5,
+                routePath: [DEVICE_ID]
+            });
+        }
     }
 }
 
 function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
-    if (isDuplicate(message.messageId)) {
-        return;
-    }
+    if (isDuplicate(message.messageId) || (message.routePath ?? []).includes(DEVICE_ID)) return;
 
     const currentPath = message.routePath ? [...message.routePath] : [];
 
-    if (currentPath.includes(DEVICE_ID)) {
-        stats.droppedLoops++;
-        return;
-    }
-
-    const isTarget = message.receiverDeviceId === DEVICE_ID;
-    const isBroadcast = message.receiverDeviceId === "*";
-
-    // Delivered
-    if (isTarget || isBroadcast) {
+    if (message.receiverDeviceId === DEVICE_ID || message.receiverDeviceId === "*") {
         stats.deliveredMessages++;
-        const finalRoute = [...currentPath, DEVICE_ID];
-        console.log("\n-------------------------------------------");
-        console.log(`📬 [DELIVERED] Message ${message.messageId}`);
-        console.log(`From:      ${message.senderDeviceId}`);
-        console.log(`To:        ${message.receiverDeviceId}`);
-        console.log(`Payload:   ${message.payload}`);
-        console.log(`Hop Count: ${message.hopCount}`);
-        console.log(`Route:     ${finalRoute.join(" -> ")}`);
-        console.log("-------------------------------------------\n");
-
-        if (isTarget) {
+        console.log(`\n📬 [DELIVERED] From: ${message.senderDeviceId} | "${message.payload}"\n`);
+        if (message.receiverDeviceId === DEVICE_ID) {
             sendAck(message.senderDeviceId, message.messageId);
             return;
         }
     }
 
-    // TTL Expiration
-    if (message.ttl <= 1) {
-        stats.droppedExpiredTtl++;
-        console.log(`[DROP] TTL expired for message ${message.messageId}`);
-        return;
-    }
+    if (message.ttl <= 1) return;
 
-    // Relay
     stats.relayedMessages++;
-    const relayedMessage: Message = {
+    const relayed: Message = {
         ...message,
         ttl: message.ttl - 1,
         hopCount: message.hopCount + 1,
         routePath: [...currentPath, DEVICE_ID]
     };
 
-    if (isBroadcast) {
-        stats.floodedForwarded++;
-        broadcastPacket(relayedMessage, sourceSocket);
+    if (message.receiverDeviceId === "*") {
+        broadcastPacket(relayed, sourceSocket);
     } else {
-        const route = getValidRoute(relayedMessage.receiverDeviceId);
+        const route = getValidRoute(relayed.receiverDeviceId);
         if (route) {
             stats.directedForwarded++;
-            console.log(`🔁 [INTELLIGENT RELAY] Routing ${relayedMessage.messageId} directly to nextHop: ${route.nextHop} (Target: ${relayedMessage.receiverDeviceId})`);
-            sendDirected(route.nextHop, relayedMessage);
+            sendDirected(route.nextHop, relayed);
         } else {
-            stats.floodedForwarded++;
-            console.log(`⚠️ [FALLBACK RELAY] Route lost for ${relayedMessage.receiverDeviceId}. Falling back to neighbor forward.`);
-            broadcastPacket(relayedMessage, sourceSocket);
+            broadcastPacket(relayed, sourceSocket);
         }
     }
 }
 
-// ==================== Phase 3 & 4 & 5: ACK Forwarding ====================
 function sendAck(targetDeviceId: string, ackMessageId: string): void {
-    stats.acksOriginated++;
     const ack: AckMessage = {
         type: "ACK",
-        ackMessageId: ackMessageId,
+        ackMessageId,
         senderDeviceId: DEVICE_ID,
         receiverDeviceId: targetDeviceId,
         timestamp: Date.now(),
@@ -654,78 +744,38 @@ function sendAck(targetDeviceId: string, ackMessageId: string): void {
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
-
     isDuplicate(`ACK-${ack.ackMessageId}-${ack.senderDeviceId}`);
-    console.log(`🔔 [ACK ORIGINATED] Confirming receipt of message ${ackMessageId} to ${targetDeviceId}`);
-
     const route = getValidRoute(targetDeviceId);
-    if (route) {
-        sendDirected(route.nextHop, ack);
-    } else {
-        broadcastPacket(ack);
-    }
+    if (route) sendDirected(route.nextHop, ack);
+    else broadcastPacket(ack);
 }
 
 function handleAckMessage(ack: AckMessage, sourceSocket: WebSocket): void {
-    const ackKey = `ACK-${ack.ackMessageId}-${ack.senderDeviceId}`;
-    if (isDuplicate(ackKey)) {
-        return;
-    }
-
-    const currentPath = ack.routePath ? [...ack.routePath] : [];
-
-    if (currentPath.includes(DEVICE_ID)) {
-        stats.droppedLoops++;
-        return;
-    }
+    if (isDuplicate(`ACK-${ack.ackMessageId}-${ack.senderDeviceId}`) || (ack.routePath ?? []).includes(DEVICE_ID)) return;
 
     if (ack.receiverDeviceId === DEVICE_ID) {
-        stats.acksReceived++;
-        const pending = pendingAcks.get(ack.ackMessageId);
-        const finalRoute = [...currentPath, DEVICE_ID];
-
-        // Phase 5: Update persistent database status to DELIVERED
         storage.markDelivered(ack.ackMessageId);
-
+        const pending = pendingAcks.get(ack.ackMessageId);
         if (pending) {
             clearTimeout(pending.timer);
             pendingAcks.delete(ack.ackMessageId);
-            const rttMs = Date.now() - pending.sentAt;
-            console.log("\n===========================================");
-            console.log(`✅ [ACK CONFIRMED] Delivery of message ${ack.ackMessageId} confirmed!`);
-            console.log(`From Recipient: ${ack.senderDeviceId}`);
-            console.log(`Round-Trip RTT: ${rttMs}ms`);
-            console.log(`ACK Route:      ${finalRoute.join(" -> ")}`);
-            console.log(`Database State: Status updated to DELIVERED`);
-            console.log("===========================================\n");
-        } else {
-            console.log(`✅ [ACK CONFIRMED] Stored offline message ${ack.ackMessageId} was delivered to ${ack.senderDeviceId}!`);
+            console.log(`✅ [ACK CONFIRMED] Message ${ack.ackMessageId} delivered to ${ack.senderDeviceId}`);
         }
         return;
     }
 
-    if (ack.ttl <= 1) {
-        stats.droppedExpiredTtl++;
-        return;
-    }
-
-    stats.acksRelayed++;
-    const relayedAck: AckMessage = {
+    if (ack.ttl <= 1) return;
+    const relayed: AckMessage = {
         ...ack,
         ttl: ack.ttl - 1,
         hopCount: ack.hopCount + 1,
-        routePath: [...currentPath, DEVICE_ID]
+        routePath: [...(ack.routePath ?? []), DEVICE_ID]
     };
-
-    const route = getValidRoute(relayedAck.receiverDeviceId);
-    if (route) {
-        sendDirected(route.nextHop, relayedAck);
-    } else {
-        broadcastPacket(relayedAck, sourceSocket);
-    }
+    const route = getValidRoute(relayed.receiverDeviceId);
+    if (route) sendDirected(route.nextHop, relayed);
+    else broadcastPacket(relayed, sourceSocket);
 }
 
-// ==================== Helper Sending Primitives ====================
 function sendDirected(nextHopDeviceId: string, packet: MeshPacket): boolean {
     const socket = peers.get(nextHopDeviceId);
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -744,74 +794,23 @@ function broadcastPacket(packet: MeshPacket, exceptSocket?: WebSocket): void {
     }
 }
 
-// ==================== Public Messaging API ====================
-export function sendMessage(receiverDeviceId: string, payload: string, ttl: number = 5): Message {
-    stats.originatedMessages++;
-    const message: Message = {
-        type: "MESSAGE",
-        messageId: randomUUID(),
-        senderDeviceId: DEVICE_ID,
-        receiverDeviceId: receiverDeviceId,
-        payload: payload,
-        timestamp: Date.now(),
-        ttl: ttl,
-        hopCount: 0,
-        routePath: [DEVICE_ID]
-    };
-
-    isDuplicate(message.messageId);
-
-    if (receiverDeviceId !== "*") {
-        // Save to SQLite database right away with initial PENDING status
-        storage.saveMessage(message, "PENDING");
-
-        const timer = setTimeout(() => {
-            if (pendingAcks.has(message.messageId)) {
-                pendingAcks.delete(message.messageId);
-                console.log(`\n⚠️ [ACK TIMEOUT] Message ${message.messageId} to ${receiverDeviceId} unconfirmed; persists in SQLite outbox\n`);
-            }
-        }, ACK_TIMEOUT_MS);
-
-        pendingAcks.set(message.messageId, {
-            message,
-            sentAt: Date.now(),
-            timer
-        });
-
-        dispatchDirectedMessage(message);
-    } else {
-        console.log(`\n📢 [BROADCAST ORIGINATING] "${payload}"`);
-        broadcastPacket(message);
-    }
-
-    return message;
-}
-
-// ==================== Keepalive Heartbeat Interval ====================
+// Keepalive
 setInterval(() => {
-    const ping: HeartbeatMessage = {
-        type: "PING",
-        deviceId: DEVICE_ID,
-        timestamp: Date.now()
-    };
-    const pingPayload = JSON.stringify(ping);
-    for (const [peerId, socket] of peers.entries()) {
-        if (socket.readyState === WebSocket.OPEN) {
-            socket.send(pingPayload);
-        }
+    const ping: HeartbeatMessage = { type: "PING", deviceId: DEVICE_ID, timestamp: Date.now() };
+    const payload = JSON.stringify(ping);
+    for (const socket of peers.values()) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(payload);
     }
 }, 15000);
 
-// ==================== mDNS Auto-Discovery ====================
+// mDNS Discovery
 let discoveryService: PeerDiscovery | null = null;
-
 if (ENABLE_MDNS) {
     discoveryService = new PeerDiscovery({
         deviceId: DEVICE_ID,
         port: PORT,
         onPeerDiscovered: (peer: DiscoveredPeer) => {
             if (!peers.has(peer.deviceId)) {
-                console.log(`[DISCOVERY] Attempting auto-connection to ${peer.deviceId} (${peer.ip}:${peer.port})`);
                 connectToPeer(`ws://${peer.ip}:${peer.port}`);
             }
         }
@@ -819,27 +818,26 @@ if (ENABLE_MDNS) {
     discoveryService.start(5000);
 }
 
-// ==================== Manual Initial Peer Connection ====================
 if (MANUAL_PEER) {
-    console.log(`[CONFIG] Connecting to manual peer: ${MANUAL_PEER}`);
     connectToPeer(MANUAL_PEER);
 }
 
-// ==================== Interactive Console ====================
+// ==================== Crisis Command Terminal CLI ====================
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
 });
 
-console.log("\nCommands:");
-console.log("  send <targetDeviceId|*> <message>  - Send message (intelligent routing & persistent storage)");
-console.log("  routes                             - View routing table");
-console.log("  outbox                             - View persistent message store (SQLite)");
-console.log("  flush                              - Force retry delivery of pending offline messages");
-console.log("  peers                              - List connected neighbors");
-console.log("  stats                              - View mesh statistics");
-console.log("  connect <host:port>                - Manually connect to peer");
-console.log("  quit                               - Exit\n");
+console.log("\nEmergency Commands:");
+console.log("  sos <TRAPPED|MEDICAL|SUPPLIES|EVACUATION> <CRITICAL|HIGH|MODERATE> <count> <description> - Send SOS Beacon");
+console.log("  respond <sosId> <DISPATCHED|STANDBY|RESOLVED> <instructions>                              - Rescuer Response");
+console.log("  warn <FLOOD_SURGE|COLLAPSE_RISK|SAFE_ZONE|AIRDROP> <announcement>                         - Broadcast Warning");
+console.log("  triage                                                                                    - View SOS Registry");
+console.log("  bulletins                                                                                 - View Hazard Bulletins");
+console.log("  routes                                                                                    - View Routing Table");
+console.log("  peers                                                                                     - View Connected Peers");
+console.log("  connect <host:port>                                                                       - Connect to peer");
+console.log("  quit                                                                                      - Exit\n");
 
 rl.on("line", (line) => {
     const trimmed = line.trim();
@@ -848,60 +846,74 @@ rl.on("line", (line) => {
     const parts = trimmed.split(" ");
     const cmd = parts[0].toLowerCase();
 
-    if (cmd === "routes") {
+    if (cmd === "sos") {
+        if (parts.length < 5) {
+            console.log("Usage: sos <TRAPPED|MEDICAL|SUPPLIES|EVACUATION> <CRITICAL|HIGH|MODERATE> <peopleCount> <description>");
+            return;
+        }
+        const type = parts[1].toUpperCase() as EmergencyType;
+        const severity = parts[2].toUpperCase() as EmergencySeverity;
+        const count = parseInt(parts[3], 10) || 1;
+        const desc = parts.slice(4).join(" ");
+        broadcastSos(type, severity, count, desc);
+    } else if (cmd === "respond") {
+        if (parts.length < 4) {
+            console.log("Usage: respond <sosId> <DISPATCHED|STANDBY|RESOLVED> <instructions>");
+            return;
+        }
+        const sosId = parts[1];
+        const status = parts[2].toUpperCase() as "DISPATCHED" | "STANDBY" | "RESOLVED";
+        const instructions = parts.slice(3).join(" ");
+        respondToSos(sosId, status, instructions);
+    } else if (cmd === "warn") {
+        if (parts.length < 3) {
+            console.log("Usage: warn <FLOOD_SURGE|COLLAPSE_RISK|SAFE_ZONE|AIRDROP> <announcement>");
+            return;
+        }
+        const hazard = parts[1].toUpperCase() as HazardType;
+        const announcement = parts.slice(2).join(" ");
+        broadcastBulletin(hazard, announcement);
+    } else if (cmd === "triage") {
+        const alerts = storage.getAllSosAlerts();
+        console.log(`\n=== 🚨 Active Emergency Triage Registry (${alerts.length} Incidents) ===`);
+        for (const a of alerts) {
+            console.log(`-------------------------------------------------------------------`);
+            console.log(`ID:       ${a.sosId}`);
+            console.log(`Victim:   ${a.senderDeviceId} | Victims: ${a.peopleCount} person(s)`);
+            console.log(`Status:   [${a.status}] | Severity: [${a.severity}] | Type: ${a.emergencyType}`);
+            console.log(`Desc:     "${a.description}"`);
+            console.log(`📍 Proximity: ${a.hopsFromAnchor} hop(s) away | Search Radius: ~${a.estimatedRadiusMeters}m`);
+            console.log(`📍 Trace:     ${a.proximityChainJson}`);
+            if (a.rescuerDeviceId) {
+                console.log(`Rescuer:  ${a.rescuerDeviceId} | Note: "${a.rescuerInstructions}"`);
+            }
+        }
+        console.log(`-------------------------------------------------------------------\n`);
+    } else if (cmd === "bulletins") {
+        const list = storage.getAllBulletins();
+        console.log(`\n=== ⚠️ Community Hazard Warnings (${list.length} Bulletins) ===`);
+        for (const b of list) {
+            const timeStr = new Date(b.timestamp).toLocaleTimeString();
+            console.log(`  [${b.hazardType}] (${timeStr}) "${b.announcement}" - From: ${b.senderDeviceId}`);
+        }
+        console.log("=================================================================\n");
+    } else if (cmd === "routes") {
         console.log(`\n=== Routing Table (${routingTable.size} entries) ===`);
         for (const [dest, entry] of routingTable.entries()) {
-            const timeLeft = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
-            console.log(`  Destination: ${dest.padEnd(15)} NextHop: ${entry.nextHop.padEnd(15)} Hops: ${entry.hopDistance} (TTL: ${timeLeft}s)`);
+            console.log(`  Target: ${dest.padEnd(15)} NextHop: ${entry.nextHop.padEnd(15)} Hops: ${entry.hopDistance}`);
         }
         console.log("=====================================\n");
-    } else if (cmd === "outbox") {
-        const records = storage.getAllStoredRecords();
-        console.log(`\n=== Persistent Message Store (SQLite: ${records.length} records) ===`);
-        for (const r of records) {
-            const dateStr = new Date(r.createdAt).toLocaleTimeString();
-            console.log(`  [${r.status.padEnd(10)}] To: ${r.receiverDeviceId.padEnd(12)} Payload: "${r.payload}" (Retries: ${r.retryCount}, Time: ${dateStr})`);
-        }
-        console.log("=========================================================\n");
-    } else if (cmd === "flush") {
-        const receivers = storage.getAllPendingReceivers();
-        console.log(`\nManual flush for receivers: [${receivers.join(", ")}]`);
-        for (const r of receivers) {
-            checkAndFlushPending(r);
-        }
     } else if (cmd === "peers") {
-        console.log(`Connected neighbors (${peers.size}):`);
-        for (const [id] of peers.entries()) {
-            console.log(`  - ${id}`);
-        }
-    } else if (cmd === "stats") {
-        console.log("\n=== Mesh Node Statistics ===");
-        console.log(`Node ID:              ${DEVICE_ID}`);
-        console.log(`Active Peers:         ${peers.size}`);
-        console.log(`Known Routes:         ${routingTable.size}`);
-        console.log(`Offline Stored Msgs:  ${stats.storedOfflineMessages}`);
-        console.log(`Flushed Stored Msgs:  ${stats.flushedOfflineMessages}`);
-        console.log(`Directed Forwards:    ${stats.directedForwarded}`);
-        console.log(`Flooded Forwards:     ${stats.floodedForwarded}`);
-        console.log(`Route Requests (RREQ):${stats.routeRequestsOriginated}`);
-        console.log(`Route Replies (RREP): ${stats.routeRepliesOriginated}`);
-        console.log(`Route Errors (RERR):  ${stats.routeErrorsOriginated} (Recv: ${stats.routeErrorsReceived})`);
-        console.log(`Messages Originated:  ${stats.originatedMessages}`);
-        console.log(`Messages Delivered:   ${stats.deliveredMessages}`);
-        console.log(`ACKs Received:        ${stats.acksReceived}`);
-        console.log("============================\n");
+        console.log(`Connected peers (${peers.size}):`);
+        for (const [id] of peers.entries()) console.log(`  - ${id}`);
     } else if (cmd === "connect" && parts[1]) {
         connectToPeer(parts[1]);
-    } else if (cmd === "send" && parts.length >= 3) {
-        const target = parts[1];
-        const payload = parts.slice(2).join(" ");
-        sendMessage(target, payload);
     } else if (cmd === "quit" || cmd === "exit") {
         if (discoveryService) discoveryService.stop();
         storage.close();
         server.close();
         process.exit(0);
     } else {
-        console.log("Unknown command. Commands: send <target|*> <message> | routes | outbox | flush | peers | stats | connect <host:port>");
+        console.log("Commands: sos | respond | warn | triage | bulletins | routes | peers | connect | quit");
     }
 });
