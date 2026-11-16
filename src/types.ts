@@ -44,6 +44,17 @@ export interface RouteReply {
     routePath: string[];        // Full path discovered
 }
 
+// Phase 4 (Step 2): Route Error Protocol (RERR) for Link Failures & Self-Healing
+export interface RouteError {
+    type: "RERR";
+    errorId: string;
+    reporterDeviceId: string;       // Node that detected the broken link
+    unreachableDestinations: string[]; // List of destinations no longer reachable
+    ttl: number;
+    hopCount: number;
+    routePath: string[];
+}
+
 export interface IdentifyMessage {
     type: "IDENTIFY";
     deviceId: string;
@@ -55,7 +66,7 @@ export interface HeartbeatMessage {
     timestamp: number;
 }
 
-export type MeshPacket = Message | AckMessage | RouteRequest | RouteReply | IdentifyMessage | HeartbeatMessage;
+export type MeshPacket = Message | AckMessage | RouteRequest | RouteReply | RouteError | IdentifyMessage | HeartbeatMessage;
 
 export interface RouteEntry {
     destination: string;        // Destination device ID

@@ -6,6 +6,7 @@ import {
     AckMessage,
     RouteRequest,
     RouteReply,
+    RouteError,
     HeartbeatMessage,
     IdentifyMessage,
     MeshPacket,
@@ -64,6 +65,9 @@ const stats = {
     floodedForwarded: 0,
     routeRequestsOriginated: 0,
     routeRepliesOriginated: 0,
+    routeErrorsOriginated: 0,
+    routeErrorsReceived: 0,
+    routeErrorsRelayed: 0,
     acksOriginated: 0,
     acksReceived: 0,
     acksRelayed: 0,
@@ -238,6 +242,10 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 handleRouteReply(raw as RouteReply, socket);
                 return;
             }
+            if (raw.type === "RERR") {
+                handleRouteError(raw as RouteError, socket);
+                return;
+            }
 
             // Handle ACKs
             if (raw.type === "ACK") {
@@ -260,15 +268,22 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
             peers.delete(remoteDeviceId);
             console.log(`[PEER] Disconnected: ${remoteDeviceId} | Remaining peers: ${peers.size}`);
 
-            // Remove dead routes through this disconnected peer
+            // Self-Healing: Invalidate all routes relying on this lost neighbor
+            const brokenDestinations: string[] = [];
             for (const [dest, entry] of routingTable.entries()) {
                 if (entry.nextHop === remoteDeviceId) {
                     routingTable.delete(dest);
+                    brokenDestinations.push(dest);
                     console.log(`🗺️ [ROUTING TABLE] Invalidated route to ${dest} (nextHop ${remoteDeviceId} lost)`);
                 }
             }
 
-            // Reconnection attempt
+            // Broadcast Route Error (RERR) to surviving neighbors
+            if (brokenDestinations.length > 0) {
+                broadcastRouteError(brokenDestinations);
+            }
+
+            // Reconnection attempt if configured
             if (originUrl) {
                 setTimeout(() => {
                     if (!peers.has(remoteDeviceId!)) {
@@ -284,10 +299,72 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
     socket.on("error", cleanup);
 }
 
+// ==================== Phase 4 (Step 2): Route Error & Self-Healing Protocol ====================
+function broadcastRouteError(brokenDestinations: string[]): void {
+    stats.routeErrorsOriginated++;
+    const rerr: RouteError = {
+        type: "RERR",
+        errorId: randomUUID(),
+        reporterDeviceId: DEVICE_ID,
+        unreachableDestinations: brokenDestinations,
+        ttl: 5,
+        hopCount: 0,
+        routePath: [DEVICE_ID]
+    };
+
+    isDuplicate(`RERR-${rerr.errorId}`);
+    console.log(`💥 [RERR ORIGINATED] Announcing broken link for destinations: [${brokenDestinations.join(", ")}]`);
+    broadcastPacket(rerr);
+}
+
+function handleRouteError(rerr: RouteError, sourceSocket: WebSocket): void {
+    const rerrKey = `RERR-${rerr.errorId}`;
+    if (isDuplicate(rerrKey)) {
+        return;
+    }
+
+    if (rerr.routePath.includes(DEVICE_ID)) {
+        stats.droppedLoops++;
+        return;
+    }
+
+    stats.routeErrorsReceived++;
+    const previousHop = rerr.routePath[rerr.routePath.length - 1];
+    let invalidatedAny = false;
+
+    // Purge any routes where our nextHop is the node that sent the RERR
+    for (const unreachableDest of rerr.unreachableDestinations) {
+        const entry = routingTable.get(unreachableDest);
+        if (entry && entry.nextHop === previousHop) {
+            routingTable.delete(unreachableDest);
+            invalidatedAny = true;
+            console.log(`💥 [RERR RECEIVED] Invalidated route to ${unreachableDest} via ${previousHop}`);
+
+            // Self-Healing: Trigger immediate re-discovery for active pending communications
+            if (pendingAcks.size > 0 || (messageWaitQueue.get(unreachableDest)?.length ?? 0) > 0) {
+                console.log(`🔄 [SELF-HEALING] Re-initiating discovery for lost destination ${unreachableDest}...`);
+                initiateRouteDiscovery(unreachableDest);
+            }
+        }
+    }
+
+    // If we invalidated any routes, propagate RERR further to notify other upstream nodes
+    if (invalidatedAny && rerr.ttl > 1) {
+        stats.routeErrorsRelayed++;
+        const forwardedRerr: RouteError = {
+            ...rerr,
+            ttl: rerr.ttl - 1,
+            hopCount: rerr.hopCount + 1,
+            routePath: [...rerr.routePath, DEVICE_ID]
+        };
+        broadcastPacket(forwardedRerr, sourceSocket);
+    }
+}
+
 // ==================== Phase 4: Route Discovery Protocol (RREQ / RREP) ====================
 function initiateRouteDiscovery(targetDeviceId: string): void {
     if (pendingRouteRequests.has(targetDeviceId)) {
-        return; // Already actively discovering
+        return;
     }
 
     pendingRouteRequests.add(targetDeviceId);
@@ -312,7 +389,6 @@ function initiateRouteDiscovery(targetDeviceId: string): void {
         pendingRouteRequests.delete(targetDeviceId);
         if (!getValidRoute(targetDeviceId)) {
             console.log(`⚠️ [ROUTE TIMEOUT] Could not find route to ${targetDeviceId}`);
-            // If any messages were queued, drop them
             const queued = messageWaitQueue.get(targetDeviceId);
             if (queued) {
                 console.log(`[QUEUE] Dropped ${queued.length} messages for unreachable ${targetDeviceId}`);
@@ -328,19 +404,17 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
         return;
     }
 
-    // Loop detection
     if (rreq.routePath.includes(DEVICE_ID)) {
         stats.droppedLoops++;
         return;
     }
 
-    // Determine which neighbor just handed us this RREQ (previous hop)
     const previousHop = rreq.routePath[rreq.routePath.length - 1];
 
-    // Reverse Route Learning: We now know how to reach rreq.originDeviceId!
+    // Reverse Route Learning
     updateRoute(rreq.originDeviceId, previousHop, rreq.hopCount + 1);
 
-    // Check if WE are the target of the discovery
+    // Check if WE are the target
     if (rreq.targetDeviceId === DEVICE_ID) {
         stats.routeRepliesOriginated++;
         console.log(`🎯 [RREQ TARGET] Route request reached destination (${DEVICE_ID})! Generating RREP.`);
@@ -357,19 +431,17 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
 
         isDuplicate(`RREP-${rrep.requestId}-${rrep.targetDeviceId}`);
 
-        // Send RREP back along the learned reverse route
         const reverseRoute = getValidRoute(rreq.originDeviceId);
         if (reverseRoute) {
             console.log(`📨 [RREP SENT] Sending reply back to ${rreq.originDeviceId} via nextHop: ${reverseRoute.nextHop}`);
             sendDirected(reverseRoute.nextHop, rrep);
         } else {
-            // Fallback: send directly back to previousHop
             sendDirected(previousHop, rrep);
         }
         return;
     }
 
-    // Not the target: check TTL and forward RREQ
+    // Check TTL and forward RREQ
     if (rreq.ttl <= 1) {
         stats.droppedExpiredTtl++;
         return;
@@ -382,7 +454,6 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
         routePath: [...rreq.routePath, DEVICE_ID]
     };
 
-    // Forward RREQ to all neighbors except sender
     broadcastPacket(forwardedRreq, sourceSocket);
 }
 
@@ -397,18 +468,17 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
         return;
     }
 
-    // Previous hop that just handed us this RREP
     const previousHop = rrep.routePath[rrep.routePath.length - 1];
 
-    // Forward Route Learning: We now know how to reach rrep.targetDeviceId via previousHop!
+    // Forward Route Learning
     updateRoute(rrep.targetDeviceId, previousHop, rrep.hopCount + 1);
 
-    // Check if WE are the origin node that asked for this route
+    // Check if WE are origin node
     if (rrep.originDeviceId === DEVICE_ID) {
         pendingRouteRequests.delete(rrep.targetDeviceId);
         console.log(`\n🎉 [ROUTE DISCOVERED] Established route to ${rrep.targetDeviceId} via ${previousHop} (Total Hops: ${rrep.hopCount + 1})!`);
 
-        // Flush any queued messages for this destination
+        // Flush any queued messages
         const queued = messageWaitQueue.get(rrep.targetDeviceId);
         if (queued && queued.length > 0) {
             console.log(`[QUEUE] Flushing ${queued.length} queued messages to ${rrep.targetDeviceId}...`);
@@ -420,7 +490,7 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
         return;
     }
 
-    // Relay RREP back to the origin
+    // Relay RREP back to origin
     if (rrep.ttl <= 1) {
         stats.droppedExpiredTtl++;
         return;
@@ -433,7 +503,6 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
         routePath: [...rrep.routePath, DEVICE_ID]
     };
 
-    // Use our routing table to direct RREP back towards originDeviceId
     const reverseRoute = getValidRoute(rrep.originDeviceId);
     if (reverseRoute) {
         sendDirected(reverseRoute.nextHop, forwardedRrep);
@@ -451,7 +520,6 @@ function dispatchDirectedMessage(message: Message): void {
         console.log(`🎯 [DIRECTED FORWARD] Message ${message.messageId} -> Target: ${message.receiverDeviceId} via NextHop: ${route.nextHop} (${route.hopDistance} hops)`);
         sendDirected(route.nextHop, message);
     } else {
-        // Queue message and trigger on-demand route discovery
         console.log(`⏳ [ROUTE MISS] No route for ${message.receiverDeviceId}. Queueing message and initiating discovery...`);
         if (!messageWaitQueue.has(message.receiverDeviceId)) {
             messageWaitQueue.set(message.receiverDeviceId, []);
@@ -468,7 +536,6 @@ function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
 
     const currentPath = message.routePath ? [...message.routePath] : [];
 
-    // Loop detection
     if (currentPath.includes(DEVICE_ID)) {
         stats.droppedLoops++;
         return;
@@ -513,18 +580,15 @@ function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
     };
 
     if (isBroadcast) {
-        // Broadcasts are flooded
         stats.floodedForwarded++;
         broadcastPacket(relayedMessage, sourceSocket);
     } else {
-        // Unicast messages are directed using nextHop from the Routing Table!
         const route = getValidRoute(relayedMessage.receiverDeviceId);
         if (route) {
             stats.directedForwarded++;
             console.log(`🔁 [INTELLIGENT RELAY] Routing ${relayedMessage.messageId} directly to nextHop: ${route.nextHop} (Target: ${relayedMessage.receiverDeviceId})`);
             sendDirected(route.nextHop, relayedMessage);
         } else {
-            // Fallback to controlled flood if route was lost
             stats.floodedForwarded++;
             console.log(`⚠️ [FALLBACK RELAY] Route lost for ${relayedMessage.receiverDeviceId}. Falling back to neighbor forward.`);
             broadcastPacket(relayedMessage, sourceSocket);
@@ -660,7 +724,6 @@ export function sendMessage(receiverDeviceId: string, payload: string, ttl: numb
             timer
         });
 
-        // Use Directed Forwarding / Route Discovery
         dispatchDirectedMessage(message);
     } else {
         console.log(`\n📢 [BROADCAST ORIGINATING] "${payload}"`);
@@ -750,6 +813,7 @@ rl.on("line", (line) => {
         console.log(`Flooded Forwards:     ${stats.floodedForwarded}`);
         console.log(`Route Requests (RREQ):${stats.routeRequestsOriginated}`);
         console.log(`Route Replies (RREP): ${stats.routeRepliesOriginated}`);
+        console.log(`Route Errors (RERR):  ${stats.routeErrorsOriginated} (Recv: ${stats.routeErrorsReceived})`);
         console.log(`Messages Originated:  ${stats.originatedMessages}`);
         console.log(`Messages Delivered:   ${stats.deliveredMessages}`);
         console.log(`ACKs Received:        ${stats.acksReceived}`);
