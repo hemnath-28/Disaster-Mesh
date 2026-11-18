@@ -30,43 +30,60 @@ function launchNode(port: string, name: string, peerUrl?: string, extraArgs: str
 }
 
 async function runTest() {
-    // 1. Launch 3-node crisis chain
-    const victim = launchNode("5001", "Node-Victim");
-    await delay(1200);
-
-    const relay = launchNode("5002", "Node-Relay", "ws://127.0.0.1:5001");
-    await delay(1200);
-
-    const rescueBase = launchNode("5003", "Node-RescueBase", "ws://127.0.0.1:5002", ["--rescue"]);
-    await delay(2500);
-
     // -------------------------------------------------------------------------
-    // Test 1: Stranded Victim fires Emergency SOS with landmark & victim count
+    // Test 1: Stranded Victim launches ALONE and broadcasts SOS while isolated
     // -------------------------------------------------------------------------
     console.log("\n=======================================================");
-    console.log("Test 1: Node-Victim broadcasts an SOS Distress Beacon");
+    console.log("Test 1: Node-Victim starts alone (0 peers) and broadcasts SOS");
     console.log("Command: sos TRAPPED CRITICAL 4 Water_Rising_2nd_Floor");
     console.log("=======================================================\n");
 
+    const victim = launchNode("5001", "Node-Victim");
+    await delay(1500);
+
     victim.stdin?.write("sos TRAPPED CRITICAL 4 Water_Rising_2nd_Floor\n");
-    await delay(3500);
+    await delay(2000);
 
     // -------------------------------------------------------------------------
-    // Test 2: Inspect Triage Registry at Rescue Base
+    // Test 2: Relay launches later and connects to Victim
+    // Verify Automatic Epidemic Sync: Victim auto-syncs open SOS to Relay
+    // -------------------------------------------------------------------------
+    console.log("\n=======================================================");
+    console.log("Test 2: Node-Relay powers on and connects to Node-Victim");
+    console.log("Expected: Node-Victim auto-syncs stored open SOS beacon to Node-Relay");
+    console.log("=======================================================\n");
+
+    const relay = launchNode("5002", "Node-Relay", "ws://127.0.0.1:5001");
+    await delay(2500);
+
+    // -------------------------------------------------------------------------
+    // Test 3: RescueBase powers on and connects to Relay
+    // Verify Multi-Hop Epidemic Sync: Relay auto-syncs victim's SOS to Base
+    // -------------------------------------------------------------------------
+    console.log("\n=======================================================");
+    console.log("Test 3: Node-RescueBase powers on and connects to Node-Relay");
+    console.log("Expected: Node-Relay auto-syncs victim's SOS beacon to Node-RescueBase");
+    console.log("=======================================================\n");
+
+    const rescueBase = launchNode("5003", "Node-RescueBase", "ws://127.0.0.1:5002", ["--rescue"]);
+    await delay(3000);
+
+    // -------------------------------------------------------------------------
+    // Test 4: Inspect Triage Registry at Rescue Base
     // Verify Mesh Hop Proximity Localization (hops from anchor, estimated radius)
     // -------------------------------------------------------------------------
     console.log("\n=======================================================");
-    console.log("Test 2: Inspecting Live Emergency Triage at Rescue Base");
+    console.log("Test 4: Inspecting Live Emergency Triage at Rescue Base");
     console.log("Expected: Shows victim Node-Victim, 2 hops away, ~200m search radius");
     console.log("=======================================================");
     rescueBase.stdin?.write("triage\n");
     await delay(1500);
 
     // -------------------------------------------------------------------------
-    // Test 3: Rescue Base responds with Rescue Confirmation & ETA
+    // Test 5: Rescue Base responds with Rescue Confirmation & ETA
     // -------------------------------------------------------------------------
     console.log("\n=======================================================");
-    console.log("Test 3: Node-RescueBase sends RESCUE_ACK back to victim");
+    console.log("Test 5: Node-RescueBase sends RESCUE_ACK back to victim");
     console.log("Command: respond (to active SOS) DISPATCHED Boat_4_Deployed_ETA_15m");
     console.log("=======================================================");
     
@@ -91,20 +108,20 @@ async function runTest() {
     await delay(2500);
 
     // -------------------------------------------------------------------------
-    // Test 4: Rescue Base broadcasts a Community Hazard Warning
+    // Test 6: Rescue Base broadcasts a Community Hazard Warning
     // -------------------------------------------------------------------------
     console.log("\n=======================================================");
-    console.log("Test 4: Node-RescueBase broadcasts public disaster bulletin");
+    console.log("Test 6: Node-RescueBase broadcasts public disaster bulletin");
     console.log("Command: warn FLOOD_SURGE Dam_Gates_Opening_Evacuate_Low_Ground");
     console.log("=======================================================");
     rescueBase.stdin?.write("warn FLOOD_SURGE Dam_Gates_Opening_Evacuate_Low_Ground\n");
     await delay(2500);
 
     // -------------------------------------------------------------------------
-    // Test 5: Verify victim's updated status and community bulletins
+    // Test 7: Verify victim's updated status and community bulletins
     // -------------------------------------------------------------------------
     console.log("\n=======================================================");
-    console.log("Test 5: Inspecting Node-Victim Triage & Bulletins list");
+    console.log("Test 7: Inspecting Node-Victim Triage & Bulletins list");
     console.log("=======================================================");
     victim.stdin?.write("triage\n");
     await delay(500);

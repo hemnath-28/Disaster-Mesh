@@ -152,6 +152,60 @@ export function checkAndFlushPending(destinationDeviceId: string): void {
     }
 }
 
+export function syncCrisisStateToPeer(socket: WebSocket, targetDeviceId?: string): void {
+    if (socket.readyState !== WebSocket.OPEN) return;
+
+    // 1. Sync active open SOS distress beacons from SQLite
+    const openAlerts = storage.getAllSosAlerts().filter((a) => a.status === "OPEN");
+    for (const alert of openAlerts) {
+        const chain: string[] = JSON.parse(alert.proximityChainJson || "[]");
+        if (targetDeviceId && chain.includes(targetDeviceId)) continue;
+
+        const sosPacket: SosAlert = {
+            type: "SOS",
+            sosId: alert.sosId,
+            senderDeviceId: alert.senderDeviceId,
+            emergencyType: alert.emergencyType as EmergencyType,
+            severity: alert.severity as EmergencySeverity,
+            peopleCount: alert.peopleCount,
+            description: alert.description,
+            location: {
+                landmark: alert.landmark,
+                anchorDeviceId: alert.anchorDeviceId,
+                hopsFromAnchor: alert.hopsFromAnchor,
+                estimatedRadiusMeters: alert.estimatedRadiusMeters,
+                proximityChain: chain
+            },
+            status: alert.status,
+            timestamp: alert.createdAt,
+            ttl: 10,
+            hopCount: alert.hopsFromAnchor,
+            routePath: chain.length > 0 ? chain : [alert.senderDeviceId]
+        };
+        socket.send(JSON.stringify(sosPacket));
+    }
+
+    // 2. Sync recent community hazard bulletins from SQLite
+    // shortcut: sync 10 latest bulletins, when to upgrade: if bulletin volume exceeds memory buffer
+    const bulletins = storage.getAllBulletins().slice(0, 10);
+    for (const b of bulletins) {
+        if (targetDeviceId && b.senderDeviceId === targetDeviceId) continue;
+
+        const bulletinPacket: DisasterBulletin = {
+            type: "BULLETIN",
+            bulletinId: b.bulletinId,
+            senderDeviceId: b.senderDeviceId,
+            hazardType: b.hazardType as HazardType,
+            announcement: b.announcement,
+            timestamp: b.timestamp,
+            ttl: 10,
+            hopCount: b.hopCount,
+            routePath: [b.senderDeviceId]
+        };
+        socket.send(JSON.stringify(bulletinPacket));
+    }
+}
+
 // ==================== WebSocket Server ====================
 const server = new WebSocketServer({ host: HOST, port: PORT });
 
@@ -223,6 +277,7 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 updateRoute(remoteDeviceId, remoteDeviceId, 1);
                 console.log(`[PEER] Identified: ${remoteDeviceId} (${direction}) | Active peers: ${peers.size}`);
                 checkAndFlushPending(remoteDeviceId);
+                syncCrisisStateToPeer(socket, remoteDeviceId);
                 return;
             }
 
