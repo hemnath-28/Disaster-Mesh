@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DisasterMesh Emergency Portal</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --surface-hover: #334155;
+            --border: #334155;
+            --text-primary: #f8fafc;
+            --text-muted: #94a3b8;
+            --danger: #ef4444;
+            --danger-hover: #dc2626;
+            --warning: #f59e0b;
+            --success: #10b981;
+            --info: #3b82f6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-width: 500px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75rem;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success);
+            font-weight: 600;
+        }
+
+        .status-pill.offline {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--danger);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: currentColor;
+        }
+
+        /* Banner Card */
+        .bulletin-box {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 0.85rem;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .bulletin-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--warning);
+            font-weight: 700;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+        }
+
+        .bulletin-text {
+            color: #fef3c7;
+            line-height: 1.35;
+        }
+
+        /* Active SOS Status Card */
+        .sos-status-card {
+            background: var(--surface);
+            border: 2px solid var(--danger);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            animation: pulse-border 2s infinite;
+        }
+
+        .sos-status-card.resolved {
+            border-color: var(--success);
+            animation: none;
+        }
+
+        @keyframes pulse-border {
+            0%, 100% { border-color: var(--danger); }
+            50% { border-color: rgba(239, 68, 68, 0.4); }
+        }
+
+        .status-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            font-weight: 700;
+        }
+
+        .status-value {
+            font-size: 1.1rem;
+            font-weight: 800;
+            color: var(--danger);
+        }
+
+        .sos-status-card.resolved .status-value {
+            color: var(--success);
+        }
+
+        .status-details {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            line-height: 1.4;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 10px;
+            border-radius: 8px;
+        }
+
+        /* Form */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .card-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .pill-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .pill-btn {
+            background: var(--surface-hover);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.15s ease;
+        }
+
+        .pill-btn:active {
+            transform: scale(0.97);
+        }
+
+        .pill-btn.active {
+            background: rgba(59, 130, 246, 0.2);
+            border-color: var(--info);
+            color: #60a5fa;
+        }
+
+        .pill-btn.critical.active {
+            background: rgba(239, 68, 68, 0.25);
+            border-color: var(--danger);
+            color: #fca5a5;
+        }
+
+        .counter-row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .counter-btn {
+            width: 44px;
+            height: 44px;
+            border-radius: 8px;
+            background: var(--surface-hover);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 1.3rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .counter-btn:active {
+            transform: scale(0.93);
+        }
+
+        .counter-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            min-width: 40px;
+            text-align: center;
+        }
+
+        input[type="text"], textarea {
+            width: 100%;
+            background: #0b1120;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            padding: 12px;
+            font-size: 0.95rem;
+            outline: none;
+        }
+
+        input[type="text"]:focus, textarea:focus {
+            border-color: var(--info);
+        }
+
+        textarea {
+            resize: none;
+            height: 70px;
+        }
+
+        /* Large Action Button */
+        .submit-sos-btn {
+            background: var(--danger);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 18px;
+            font-size: 1.15rem;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4);
+            transition: all 0.15s ease;
+            margin-top: 4px;
+        }
+
+        .submit-sos-btn:active {
+            background: var(--danger-hover);
+            transform: scale(0.98);
+        }
+
+        .submit-sos-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        footer {
+            margin-top: auto;
+            text-align: center;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            padding: 12px 0;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="brand">
+            <span>🚨</span>
+            <span>DisasterMesh SOS</span>
+        </div>
+        <div id="connStatus" class="status-pill">
+            <span class="status-dot"></span>
+            <span id="connStatusText">Mesh Gateway Connected</span>
+        </div>
+    </header>
+
+    <!-- Hazard Alert Banner -->
+    <div id="bulletinBox" class="bulletin-box" style="display: none;">
+        <div class="bulletin-header">
+            <span>⚠️</span>
+            <span id="bulletinType">HAZARD WARNING</span>
+        </div>
+        <div id="bulletinText" class="bulletin-text">Notice details here.</div>
+    </div>
+
+    <!-- Active Emergency Tracker Card (visible once SOS is sent) -->
+    <div id="activeSosCard" class="sos-status-card" style="display: none;">
+        <div class="status-label">Emergency Broadcast Status</div>
+        <div id="sosStatusText" class="status-value">BROADCASTING TO MESH...</div>
+        <div id="sosDetailsText" class="status-details">
+            Signal transmitted through local gateway. Searching for rescue team routes...
+        </div>
+    </div>
+
+    <!-- SOS Beacon Form -->
+    <main id="sosFormCard" class="card">
+        <div class="card-title">Send Emergency Distress Signal</div>
+
+        <!-- Emergency Category -->
+        <div class="field-group">
+            <label>Emergency Category</label>
+            <div class="pill-grid" id="categoryGroup">
+                <button type="button" class="pill-btn active" data-val="TRAPPED">🏚️ Trapped</button>
+                <button type="button" class="pill-btn" data-val="MEDICAL">🩹 Medical Aid</button>
+                <button type="button" class="pill-btn" data-val="SUPPLIES">💧 Food / Water</button>
+                <button type="button" class="pill-btn" data-val="EVACUATION">🚨 Evacuate</button>
+            </div>
+        </div>
+
+        <!-- Severity -->
+        <div class="field-group">
+            <label>Urgency Level</label>
+            <div class="pill-grid" id="severityGroup">
+                <button type="button" class="pill-btn critical active" data-val="CRITICAL">🔴 Critical (Life Threat)</button>
+                <button type="button" class="pill-btn" data-val="HIGH">🟠 High (Urgent)</button>
+                <button type="button" class="pill-btn" data-val="MODERATE">🟡 Moderate</button>
+            </div>
+        </div>
+
+        <!-- People Count -->
+        <div class="field-group">
+            <label>People Requiring Assistance</label>
+            <div class="counter-row">
+                <button type="button" class="counter-btn" id="btnMinus">-</button>
+                <span class="counter-value" id="peopleCountDisplay">1</span>
+                <button type="button" class="counter-btn" id="btnPlus">+</button>
+            </div>
+        </div>
+
+        <!-- Landmark / Building -->
+        <div class="field-group">
+            <label>Landmark / Visible Reference</label>
+            <input type="text" id="landmarkInput" placeholder="e.g. 2nd floor, blue roof collapsed" maxlength="100">
+        </div>
+
+        <!-- Description -->
+        <div class="field-group">
+            <label>Situation Details</label>
+            <textarea id="descInput" placeholder="Describe injuries, hazards, or immediate needs..."></textarea>
+        </div>
+
+        <!-- Submit Button -->
+        <button type="button" id="btnSendSos" class="submit-sos-btn">
+            <span>🚨</span>
+            <span>TRANSMIT EMERGENCY SOS</span>
+        </button>
+    </main>
+
+    <footer>
+        No internet required • Connected to offline disaster relay gateway.
+    </footer>
+
+    <script>
+        (function() {
+            let activeSosId = localStorage.getItem("disaster_mesh_active_sos_id");
+            let peopleCount = 1;
+            let emergencyType = "TRAPPED";
+            let severity = "CRITICAL";
+            let ws = null;
+
+            // DOM Elements
+            const connStatus = document.getElementById("connStatus");
+            const connStatusText = document.getElementById("connStatusText");
+            const bulletinBox = document.getElementById("bulletinBox");
+            const bulletinType = document.getElementById("bulletinType");
+            const bulletinText = document.getElementById("bulletinText");
+            const activeSosCard = document.getElementById("activeSosCard");
+            const sosStatusText = document.getElementById("sosStatusText");
+            const sosDetailsText = document.getElementById("sosDetailsText");
+            const btnMinus = document.getElementById("btnMinus");
+            const btnPlus = document.getElementById("btnPlus");
+            const peopleCountDisplay = document.getElementById("peopleCountDisplay");
+            const landmarkInput = document.getElementById("landmarkInput");
+            const descInput = document.getElementById("descInput");
+            const btnSendSos = document.getElementById("btnSendSos");
+
+            // Setup Pill Click Listeners
+            function bindPills(containerId, onSelect) {
+                const buttons = document.querySelectorAll("#" + containerId + " .pill-btn");
+                buttons.forEach(btn => {
+                    btn.addEventListener("click", () => {
+                        buttons.forEach(b => b.classList.remove("active"));
+                        btn.classList.add("active");
+                        onSelect(btn.getAttribute("data-val"));
+                    });
+                });
+            }
+
+            bindPills("categoryGroup", (val) => { emergencyType = val; });
+            bindPills("severityGroup", (val) => { severity = val; });
+
+            // People Counter
+            btnMinus.addEventListener("click", () => {
+                if (peopleCount > 1) {
+                    peopleCount--;
+                    peopleCountDisplay.textContent = peopleCount;
+                }
+            });
+
+            btnPlus.addEventListener("click", () => {
+                if (peopleCount < 99) {
+                    peopleCount++;
+                    peopleCountDisplay.textContent = peopleCount;
+                }
+            });
+
+            // WebSocket Connection
+            function connectWs() {
+                const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+                const wsUrl = `${protocol}//${window.location.host}/mobile-ws`;
+                
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    connStatus.classList.remove("offline");
+                    connStatusText.textContent = "Mesh Gateway Connected";
+                    // If we had a prior active SOS, ask the node for current status
+                    if (activeSosId) {
+                        ws.send(JSON.stringify({ type: "SYNC_REQUEST", sosId: activeSosId }));
+                    }
+                };
+
+                ws.onclose = () => {
+                    connStatus.classList.add("offline");
+                    connStatusText.textContent = "Reconnecting to Gateway...";
+                    setTimeout(connectWs, 2000);
+                };
+
+                ws.onerror = () => {
+                    ws.close();
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleIncoming(data);
+                    } catch (e) {
+                        console.error("Invalid packet:", e);
+                    }
+                };
+            }
+
+            function handleIncoming(packet) {
+                // 1. Emergency Bulletins
+                if (packet.type === "BULLETIN") {
+                    bulletinBox.style.display = "flex";
+                    bulletinType.textContent = (packet.hazardType || "HAZARD") + " WARNING";
+                    bulletinText.textContent = packet.announcement;
+                }
+
+                // 2. SOS Delivery Confirmation
+                if (packet.type === "PHONE_SOS_ACK") {
+                    if (!activeSosId || activeSosId === packet.sosId) {
+                        activeSosId = packet.sosId;
+                        localStorage.setItem("disaster_mesh_active_sos_id", activeSosId);
+                        renderActiveSos("SIGNAL DELIVERED TO MESH", "Your SOS beacon is actively propagating across mesh nodes to search & rescue units.", false);
+                    }
+                }
+
+                // 3. Rescuer Response
+                if (packet.type === "RESCUER_RESPONSE") {
+                    if (packet.sosId === activeSosId) {
+                        const eta = packet.estimatedArrivalTime || "En route";
+                        const instructions = packet.instructions || "Remain in safe location.";
+                        renderActiveSos(
+                            `RESCUE TEAM DISPATCHED (${eta})`,
+                            `Instructions: "${instructions}"`,
+                            true
+                        );
+                    }
+                }
+            }
+
+            function renderActiveSos(status, details, isResolved) {
+                activeSosCard.style.display = "flex";
+                if (isResolved) {
+                    activeSosCard.classList.add("resolved");
+                } else {
+                    activeSosCard.classList.remove("resolved");
+                }
+                sosStatusText.textContent = status;
+                sosDetailsText.textContent = details;
+            }
+
+            // Restore from localStorage on page load
+            if (activeSosId) {
+                renderActiveSos("SIGNAL ACTIVE IN MESH", "Awaiting response from local rescue coordinators...", false);
+            }
+
+            // Transmit SOS
+            btnSendSos.addEventListener("click", () => {
+                const landmark = landmarkInput.value.trim() || "Unspecified location";
+                const description = descInput.value.trim() || `${emergencyType} reported with ${peopleCount} person(s).`;
+
+                const payload = {
+                    type: "PHONE_SOS",
+                    emergencyType,
+                    severity,
+                    peopleCount,
+                    landmark,
+                    description,
+                    timestamp: Date.now()
+                };
+
+                btnSendSos.disabled = true;
+                btnSendSos.innerHTML = `<span>⏳</span><span>TRANSMITTING...</span>`;
+
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(payload));
+                } else {
+                    alert("Gateway link offline. Please stay close to the mesh node.");
+                }
+
+                setTimeout(() => {
+                    btnSendSos.disabled = false;
+                    btnSendSos.innerHTML = `<span>🚨</span><span>TRANSMIT EMERGENCY SOS</span>`;
+                }, 3000);
+            });
+
+            // Start connection
+            connectWs();
+        })();
+    </script>
+</body>
+</html>
