@@ -15,6 +15,7 @@
     "test:dedupe": "tsx src/test-dedupe.ts",
     "test:ttl": "tsx src/test-ttl.ts",
     "test:adaptive-ttl": "tsx src/test-adaptive-ttl.ts",
+    "test:mobile": "tsx src/test-mobile-gateway.ts",
     "test:stress": "tsx src/test-stress.ts",
     "demo": "tsx src/demo.ts"
   },

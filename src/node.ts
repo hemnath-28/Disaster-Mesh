@@ -1,4 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
+import http from "http";
+import fs from "fs";
+import path from "path";
 import { randomUUID } from "crypto";
 import readline from "readline";
 import { EventEmitter } from "events";
@@ -259,19 +262,134 @@ export function syncCrisisStateToPeer(socket: WebSocket, targetDeviceId?: string
     }
 }
 
-// ==================== WebSocket Server ====================
-const server = new WebSocketServer({ host: HOST, port: PORT });
+// ==================== HTTP Gateway & Captive Portal ====================
+const mobileClients = new Set<WebSocket>();
 
-server.on("listening", () => {
-    console.log(`[SERVER] Listening on ${HOST}:${PORT}`);
+const captivePaths = new Set([
+    "/hotspot-detect.html",        // Apple iOS
+    "/library/test/success.html",  // Apple iOS
+    "/generate_204",              // Android
+    "/gen_204",                   // Android
+    "/connecttest.txt",           // Windows
+    "/ncsi.txt"                   // Windows
+]);
+
+const httpServer = http.createServer((req, res) => {
+    const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+    const pathname = parsedUrl.pathname;
+
+    // Captive probe detection -> 302 Redirect to /mobile
+    if (captivePaths.has(pathname)) {
+        res.writeHead(302, {
+            Location: "/mobile",
+            "Cache-Control": "no-cache"
+        });
+        res.end();
+        return;
+    }
+
+    if (pathname === "/mobile" || pathname === "/") {
+        const candidates = [
+            path.join(process.cwd(), "src", "web", "mobile.html"),
+            path.resolve("./src/web/mobile.html")
+        ];
+        for (const candidate of candidates) {
+            if (fs.existsSync(candidate)) {
+                const html = fs.readFileSync(candidate, "utf-8");
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Cache-Control": "no-cache"
+                });
+                res.end(html);
+                return;
+            }
+        }
+    }
+
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("Not Found");
 });
 
-server.on("connection", (socket: WebSocket) => {
-    setupSocketHandlers(socket, "inbound");
+// ==================== WebSocket Server (Mesh & Mobile) ====================
+const server = new WebSocketServer({ server: httpServer });
+
+server.on("connection", (socket: WebSocket, req: http.IncomingMessage) => {
+    const reqUrl = req.url || "/";
+    if (reqUrl.startsWith("/mobile-ws")) {
+        // Mobile phone client connecting to emergency portal
+        mobileClients.add(socket);
+        console.log(`[MOBILE GATEWAY] Mobile client connected. Active mobile clients: ${mobileClients.size}`);
+
+        // Sync recent hazard bulletins to phone
+        const bulletins = storage.getAllBulletins().slice(0, 5);
+        for (const b of bulletins) {
+            socket.send(JSON.stringify(b));
+        }
+
+        socket.on("message", (data) => {
+            try {
+                const packet = JSON.parse(data.toString());
+                if (packet.type === "PHONE_SOS") {
+                    console.log(`[MOBILE GATEWAY] Received Phone SOS from mobile client`);
+                    const alert = broadcastSos(
+                        packet.emergencyType || "TRAPPED",
+                        packet.severity || "CRITICAL",
+                        packet.peopleCount || 1,
+                        packet.description || "Phone Emergency SOS",
+                        packet.landmark || "Nearby Mobile Client"
+                    );
+                    socket.send(JSON.stringify({
+                        type: "PHONE_SOS_ACK",
+                        sosId: alert.sosId,
+                        status: "DELIVERED"
+                    }));
+                } else if (packet.type === "SYNC_REQUEST" && packet.sosId) {
+                    const alert = storage.getSosAlert(packet.sosId);
+                    if (alert) {
+                        if (alert.status === "RESOLVED") {
+                            socket.send(JSON.stringify({
+                                type: "RESCUER_RESPONSE",
+                                sosId: alert.sosId,
+                                status: alert.status,
+                                rescuerDeviceId: alert.rescuerDeviceId || "Rescue Unit",
+                                instructions: alert.responderNotes || "Help dispatched/resolved.",
+                                estimatedArrivalTime: "Arrived or En Route"
+                            }));
+                        } else {
+                            socket.send(JSON.stringify({
+                                type: "PHONE_SOS_ACK",
+                                sosId: alert.sosId,
+                                status: alert.status
+                            }));
+                        }
+                    }
+                }
+            } catch (err: any) {
+                console.error("[MOBILE WS ERROR]", err.message);
+            }
+        });
+
+        socket.on("close", () => {
+            mobileClients.delete(socket);
+            console.log(`[MOBILE GATEWAY] Mobile client disconnected. Remaining: ${mobileClients.size}`);
+        });
+
+        socket.on("error", (err) => {
+            console.error("[MOBILE WS CLIENT ERROR]", err.message);
+            mobileClients.delete(socket);
+        });
+    } else {
+        // Inter-node mesh peering socket
+        setupSocketHandlers(socket, "inbound");
+    }
 });
 
 server.on("error", (error) => {
     console.error("[SERVER ERROR]", error.message);
+});
+
+httpServer.listen(PORT, HOST, () => {
+    console.log(`[SERVER] Listening on ${HOST}:${PORT} (HTTP Captive Portal & WebSockets)`);
 });
 
 export function connectToPeer(address: string): void {
@@ -552,6 +670,20 @@ export function respondToSos(
     const updatedAlert = storage.getSosAlert(sosId);
     if (updatedAlert) meshEvents.emit("sos:upsert", updatedAlert);
 
+    const localMobileNotification = JSON.stringify({
+        type: "RESCUER_RESPONSE",
+        sosId: sosId,
+        status: status,
+        rescuerDeviceId: DEVICE_ID,
+        estimatedArrivalTime: eta || "15-20 mins",
+        instructions: instructions
+    });
+    for (const client of mobileClients) {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(localMobileNotification);
+        }
+    }
+
     const rescueAck: RescueAck = {
         type: "RESCUE_ACK",
         sosId: sosId,
@@ -599,6 +731,21 @@ function handleRescueAck(ack: RescueAck, sourceSocket: WebSocket): void {
     storage.updateSosStatus(ack.sosId, ack.status, ack.rescuerDeviceId, ack.instructions);
     const updatedAckAlert = storage.getSosAlert(ack.sosId);
     if (updatedAckAlert) meshEvents.emit("sos:upsert", updatedAckAlert);
+
+    // Push rescue update down to any connected mobile phone clients
+    const mobileNotification = JSON.stringify({
+        type: "RESCUER_RESPONSE",
+        sosId: ack.sosId,
+        status: ack.status,
+        rescuerDeviceId: ack.rescuerDeviceId,
+        estimatedArrivalTime: ack.estimatedArrivalTime,
+        instructions: ack.instructions
+    });
+    for (const client of mobileClients) {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(mobileNotification);
+        }
+    }
 
     // If WE are the victim node
     if (ack.victimDeviceId === DEVICE_ID) {
@@ -649,6 +796,12 @@ export function broadcastBulletin(hazardType: HazardType, announcement: string):
     storage.saveBulletin(bulletin);
     meshEvents.emit("bulletin:new", bulletin);
 
+    for (const client of mobileClients) {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(bulletin));
+        }
+    }
+
     console.log("\n⚠️⚠️⚠️ [PUBLIC HAZARD BULLETIN BROADCASTED] ⚠️⚠️⚠️");
     console.log(`Hazard:       ${hazardType}`);
     console.log(`Announcement: "${announcement}"`);
@@ -670,6 +823,12 @@ function handleDisasterBulletin(bulletin: DisasterBulletin, sourceSocket: WebSoc
     stats.bulletinsReceived++;
     storage.saveBulletin(bulletin);
     meshEvents.emit("bulletin:new", bulletin);
+
+    for (const client of mobileClients) {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(bulletin));
+        }
+    }
 
     console.log("\n⚠️⚠️⚠️ [COMMUNITY DISASTER WARNING] ⚠️⚠️⚠️");
     console.log(`Issued By:    ${bulletin.senderDeviceId}`);
@@ -1105,6 +1264,7 @@ rl.on("line", (line) => {
         if (discoveryService) discoveryService.stop();
         stopDashboardServer();
         storage.close();
+        httpServer.close();
         server.close();
         process.exit(0);
     } else {
