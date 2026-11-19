@@ -162,6 +162,17 @@ function getValidRoute(destination: string): RouteEntry | undefined {
     return route;
 }
 
+const DEFAULT_SEARCH_TTL = parseInt(process.env.DEFAULT_SEARCH_TTL || "15", 10);
+const TTL_SAFETY_MARGIN = 3;
+
+export function getAdaptiveTtl(destination: string, fallbackTtl: number = DEFAULT_SEARCH_TTL): number {
+    const route = getValidRoute(destination);
+    if (route) {
+        return Math.max(route.hopDistance + TTL_SAFETY_MARGIN, 4);
+    }
+    return fallbackTtl;
+}
+
 export function checkAndFlushPending(destinationDeviceId: string): void {
     const pendingMessages = storage.getPendingMessagesFor(destinationDeviceId);
     if (pendingMessages.length === 0) return;
@@ -177,7 +188,7 @@ export function checkAndFlushPending(destinationDeviceId: string): void {
                 originDeviceId: DEVICE_ID,
                 targetDeviceId: destinationDeviceId,
                 hopCount: 0,
-                ttl: 5,
+                ttl: DEFAULT_SEARCH_TTL,
                 routePath: [DEVICE_ID]
             });
         }
@@ -185,6 +196,7 @@ export function checkAndFlushPending(destinationDeviceId: string): void {
     }
 
     for (const msg of pendingMessages) {
+        msg.ttl = getAdaptiveTtl(destinationDeviceId);
         storage.markInTransit(msg.messageId);
         stats.directedForwarded++;
         sendDirected(route.nextHop, msg);
@@ -547,7 +559,7 @@ export function respondToSos(
         estimatedArrivalTime: eta || "15-20 mins",
         instructions: instructions,
         timestamp: Date.now(),
-        ttl: 10,
+        ttl: getAdaptiveTtl(alert.senderDeviceId, 15),
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
@@ -626,7 +638,7 @@ export function broadcastBulletin(hazardType: HazardType, announcement: string):
         hazardType,
         announcement,
         timestamp: Date.now(),
-        ttl: 10,
+        ttl: DEFAULT_SEARCH_TTL,
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
@@ -682,7 +694,7 @@ function broadcastRouteError(brokenDestinations: string[]): void {
         errorId: randomUUID(),
         reporterDeviceId: DEVICE_ID,
         unreachableDestinations: brokenDestinations,
-        ttl: 5,
+        ttl: DEFAULT_SEARCH_TTL,
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
@@ -727,7 +739,7 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
             originDeviceId: rreq.originDeviceId,
             targetDeviceId: DEVICE_ID,
             hopCount: 0,
-            ttl: 5,
+            ttl: getAdaptiveTtl(rreq.originDeviceId, DEFAULT_SEARCH_TTL),
             routePath: [DEVICE_ID]
         };
         isDuplicate(`RREP-${rrep.requestId}-${rrep.targetDeviceId}`);
@@ -781,7 +793,8 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
     }
 }
 
-export function sendDirectedMessage(targetDeviceId: string, text: string, ttl: number = 5): void {
+export function sendDirectedMessage(targetDeviceId: string, text: string, customTtl?: number): void {
+    const calculatedTtl = customTtl !== undefined ? customTtl : getAdaptiveTtl(targetDeviceId);
     const msg: Message = {
         type: "MESSAGE",
         messageId: randomUUID(),
@@ -789,18 +802,22 @@ export function sendDirectedMessage(targetDeviceId: string, text: string, ttl: n
         receiverDeviceId: targetDeviceId,
         payload: text,
         timestamp: Date.now(),
-        ttl: ttl,
+        ttl: calculatedTtl,
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
     isDuplicate(msg.messageId);
-    console.log(`[DISPATCH] Sending message to ${targetDeviceId} (TTL: ${ttl}): "${text}"`);
+    console.log(`[DISPATCH] Sending message to ${targetDeviceId} (Adaptive TTL: ${calculatedTtl}): "${text}"`);
     dispatchDirectedMessage(msg);
 }
 
 function dispatchDirectedMessage(message: Message): void {
     const route = getValidRoute(message.receiverDeviceId);
     if (route) {
+        if (message.ttl === DEFAULT_SEARCH_TTL) {
+            message.ttl = getAdaptiveTtl(message.receiverDeviceId);
+            console.log(`[ROUTE-AWARE] Route resolved for ${message.receiverDeviceId} (distance: ${route.hopDistance}) -> Adaptive TTL dynamically set to ${message.ttl}`);
+        }
         stats.directedForwarded++;
         sendDirected(route.nextHop, message);
     } else {
@@ -820,7 +837,7 @@ function dispatchDirectedMessage(message: Message): void {
                 originDeviceId: DEVICE_ID,
                 targetDeviceId: message.receiverDeviceId,
                 hopCount: 0,
-                ttl: 5,
+                ttl: DEFAULT_SEARCH_TTL,
                 routePath: [DEVICE_ID]
             });
         }
@@ -881,7 +898,7 @@ function sendAck(targetDeviceId: string, ackMessageId: string): void {
         senderDeviceId: DEVICE_ID,
         receiverDeviceId: targetDeviceId,
         timestamp: Date.now(),
-        ttl: 5,
+        ttl: getAdaptiveTtl(targetDeviceId, DEFAULT_SEARCH_TTL),
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
