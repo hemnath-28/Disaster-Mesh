@@ -148,7 +148,7 @@
         /* Metrics Row */
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 12px;
         }
 
@@ -510,8 +510,15 @@
     <!-- Top Key Metrics -->
     <div class="metrics-grid">
         <div class="metric-card">
-            <span class="metric-title">Active Mesh Peers</span>
-            <span class="metric-value" id="metricPeers">0</span>
+            <span class="metric-title">Direct Active Peers</span>
+            <span class="metric-value" id="metricDirectPeers">0</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-title">Multi-Hop Nodes</span>
+            <div style="display: flex; align-items: baseline; gap: 8px;">
+                <span class="metric-value" id="metricMultiHop" style="color: #93c5fd;">0</span>
+                <span style="font-size: 0.8rem; color: var(--text-muted);" id="metricTotalNodes">(0 Total)</span>
+            </div>
         </div>
         <div class="metric-card">
             <span class="metric-title">Open Emergencies</span>
@@ -793,7 +800,19 @@
                 if (a.status === "DISPATCHED") dispatchedCount++;
             }
 
-            document.getElementById("metricPeers").textContent = state.peers.length;
+            const directCount = state.peers.length;
+            const multiHopSet = new Set();
+            (state.routes || []).forEach(r => {
+                if (!state.peers.includes(r.destination)) {
+                    multiHopSet.add(r.destination);
+                }
+            });
+            const multiHopCount = multiHopSet.size;
+            const totalCount = directCount + multiHopCount;
+
+            document.getElementById("metricDirectPeers").textContent = directCount;
+            document.getElementById("metricMultiHop").textContent = multiHopCount;
+            document.getElementById("metricTotalNodes").textContent = `(${totalCount} Total)`;
             document.getElementById("metricOpenSos").textContent = openSosCount;
             document.getElementById("metricDispatched").textContent = dispatchedCount;
             document.getElementById("metricBulletins").textContent = state.bulletins.length;

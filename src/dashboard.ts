@@ -52,11 +52,17 @@ export function startDashboardServer(options: DashboardOptions): http.Server {
         const url = req.url || "/";
 
         if (url === "/" || url === "/index.html") {
+            let content = htmlContent;
+            for (const p of candidates) {
+                if (fs.existsSync(p)) {
+                    try { content = fs.readFileSync(p, "utf-8"); break; } catch (_) {}
+                }
+            }
             res.writeHead(200, {
                 "Content-Type": "text/html; charset=utf-8",
                 "Cache-Control": "no-cache"
             });
-            res.end(htmlContent);
+            res.end(content);
             return;
         }
 
