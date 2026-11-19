@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DisasterMesh — Rescue Operations Command</title>
+    <style>
+        :root {
+            --bg-base: #0b0f19;
+            --bg-surface: #111827;
+            --bg-card: #1f2937;
+            --bg-card-hover: #374151;
+            --border: #374151;
+            --border-highlight: #4b5563;
+            --text-main: #f9fafb;
+            --text-muted: #9ca3af;
+            --critical: #ef4444;
+            --critical-bg: rgba(239, 68, 68, 0.15);
+            --high: #f59e0b;
+            --high-bg: rgba(245, 158, 11, 0.15);
+            --moderate: #06b6d4;
+            --moderate-bg: rgba(6, 182, 212, 0.15);
+            --success: #10b981;
+            --success-bg: rgba(16, 185, 129, 0.15);
+            --accent: #3b82f6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            min-height: 100vh;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* Top Header & Metrics Bar */
+        header {
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-title h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .node-tag {
+            background-color: #1e3a8a;
+            color: #93c5fd;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-family: monospace;
+            font-weight: 600;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            background-color: rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        .status-pill.disconnected {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: var(--critical);
+            border-color: var(--critical);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: currentColor;
+        }
+
+        .btn {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+
+        .btn:hover {
+            background-color: var(--bg-card-hover);
+            border-color: var(--border-highlight);
+        }
+
+        .btn-primary {
+            background-color: #2563eb;
+            border-color: #3b82f6;
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background-color: #1d4ed8;
+        }
+
+        .btn-danger {
+            background-color: #dc2626;
+            border-color: var(--critical);
+            color: #fff;
+        }
+
+        /* Metrics Row */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+
+        .metric-card {
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .metric-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .metric-value {
+            font-size: 1.75rem;
+            font-weight: 800;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .metric-value.critical { color: var(--critical); }
+        .metric-value.high { color: var(--high); }
+        .metric-value.success { color: var(--success); }
+
+        /* Main Workspace Layout */
+        .workspace-grid {
+            display: grid;
+            grid-template-columns: 3fr 2fr;
+            gap: 16px;
+            flex: 1;
+        }
+
+        @media (max-width: 1024px) {
+            .workspace-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-header h2 {
+            font-size: 1rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .panel-body {
+            padding: 14px;
+            overflow-y: auto;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        /* Triage Incident Cards */
+        .incident-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-left: 5px solid var(--border-highlight);
+            border-radius: 6px;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            transition: transform 0.1s ease, border-color 0.15s ease;
+        }
+
+        .incident-card:hover {
+            border-color: var(--border-highlight);
+        }
+
+        .incident-card.critical {
+            border-left-color: var(--critical);
+            box-shadow: 0 0 12px rgba(239, 68, 68, 0.15);
+        }
+
+        .incident-card.high {
+            border-left-color: var(--high);
+        }
+
+        .incident-card.moderate {
+            border-left-color: var(--moderate);
+        }
+
+        .incident-card.resolved {
+            border-left-color: #6b7280;
+            opacity: 0.75;
+        }
+
+        .incident-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .incident-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .badge {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .badge-critical { background: var(--critical-bg); color: var(--critical); border: 1px solid var(--critical); }
+        .badge-high { background: var(--high-bg); color: var(--high); border: 1px solid var(--high); }
+        .badge-moderate { background: var(--moderate-bg); color: var(--moderate); border: 1px solid var(--moderate); }
+        .badge-dispatched { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
+        .badge-resolved { background: rgba(107, 114, 128, 0.2); color: #9ca3af; border: 1px solid #6b7280; }
+
+        .victim-name {
+            font-family: monospace;
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .incident-desc {
+            font-size: 0.95rem;
+            line-height: 1.4;
+            color: #f3f4f6;
+            background-color: rgba(0, 0, 0, 0.2);
+            padding: 8px 10px;
+            border-radius: 4px;
+        }
+
+        .incident-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .proximity-chain {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            background: #0f172a;
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            color: #93c5fd;
+            flex-wrap: wrap;
+        }
+
+        .chain-arrow {
+            color: #64748b;
+        }
+
+        .incident-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 4px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding-top: 8px;
+        }
+
+        /* Right Column Stack */
+        .sub-panel-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            flex: 1;
+        }
+
+        /* Tables (Peers & Routes) */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            text-align: left;
+        }
+
+        th {
+            background-color: var(--bg-card);
+            color: var(--text-muted);
+            padding: 8px 10px;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            font-weight: 700;
+            border-bottom: 1px solid var(--border);
+        }
+
+        td {
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-family: monospace;
+        }
+
+        tr:hover td {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+
+        /* Bulletin Composer & List */
+        .bulletin-form {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .form-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        select, input[type="text"], textarea {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 8px 10px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            outline: none;
+        }
+
+        select:focus, input[type="text"]:focus, textarea:focus {
+            border-color: var(--accent);
+        }
+
+        .bulletin-item {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .bulletin-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .bulletin-text {
+            font-size: 0.9rem;
+            color: #f9fafb;
+        }
+
+        /* Modal Dialog */
+        dialog {
+            background-color: var(--bg-surface);
+            color: var(--text-main);
+            border: 1px solid var(--border-highlight);
+            border-radius: 10px;
+            padding: 20px;
+            max-width: 500px;
+            width: 90vw;
+            margin: auto;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7);
+        }
+
+        dialog::backdrop {
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(2px);
+        }
+
+        .modal-form {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            margin-top: 14px;
+        }
+
+        .modal-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .modal-field label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            padding: 30px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header Navigation -->
+    <header>
+        <div class="header-title">
+            <h1>🚨 DISASTERMESH OPS COMMAND</h1>
+            <span class="node-tag" id="localNodeId">Node-RescueBase</span>
+        </div>
+        <div class="header-actions">
+            <span class="status-pill" id="connStatus">
+                <span class="status-dot"></span>
+                <span id="connStatusText">CONNECTING...</span>
+            </span>
+            <button class="btn" id="audioToggleBtn" title="Toggle Emergency Chime Sound">🔊 Audio: ON</button>
+            <button class="btn" id="refreshBtn" title="Re-sync full state from Rescue Base">🔄 Sync</button>
+        </div>
+    </header>
+
+    <!-- Top Key Metrics -->
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <span class="metric-title">Active Mesh Peers</span>
+            <span class="metric-value" id="metricPeers">0</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-title">Open Emergencies</span>
+            <span class="metric-value critical" id="metricOpenSos">0</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-title">Units Dispatched</span>
+            <span class="metric-value success" id="metricDispatched">0</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-title">Active Hazard Bulletins</span>
+            <span class="metric-value" id="metricBulletins">0</span>
+        </div>
+    </div>
+
+    <!-- Main Operational Workspace -->
+    <div class="workspace-grid">
+
+        <!-- Left Pane: Prioritized Emergency Triage Queue -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2>🚨 Live Emergency Triage Queue</h2>
+                <span style="font-size: 0.8rem; color: var(--text-muted);" id="triageCountBadge">0 Incidents</span>
+            </div>
+            <div class="panel-body" id="triageList">
+                <div class="empty-state">No emergency distress beacons reported. All clear.</div>
+            </div>
+        </section>
+
+        <!-- Right Stack: Network Roster & Bulletins -->
+        <div class="sub-panel-stack">
+
+            <!-- Active Peers & Routing Table -->
+            <section class="panel" style="max-height: 320px;">
+                <div class="panel-header">
+                    <h2>📡 Active Routing & Peers</h2>
+                    <span style="font-size: 0.8rem; color: var(--text-muted);" id="peerCountBadge">0 Reachable</span>
+                </div>
+                <div class="panel-body" style="padding: 0;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Target Device</th>
+                                <th>Next Hop Relay</th>
+                                <th>Hops</th>
+                                <th>Est. Radius</th>
+                            </tr>
+                        </thead>
+                        <tbody id="routesTableBody">
+                            <tr><td colspan="4" class="empty-state">No active routes detected yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Community Hazard Bulletins -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2>⚠️ Hazard Bulletins & Warnings</h2>
+                </div>
+                <div class="panel-body">
+                    <!-- Issue Warning Form -->
+                    <form class="bulletin-form" id="bulletinForm">
+                        <div class="form-row">
+                            <select id="hazardTypeSelect" style="width: 160px;" required>
+                                <option value="FLOOD_SURGE">🌊 FLOOD SURGE</option>
+                                <option value="COLLAPSE_RISK">🏚️ COLLAPSE RISK</option>
+                                <option value="SAFE_ZONE">🛡️ SAFE ZONE</option>
+                                <option value="AIRDROP">📦 AIRDROP</option>
+                            </select>
+                            <input type="text" id="announcementInput" placeholder="Enter emergency announcement..." style="flex: 1;" required>
+                            <button type="submit" class="btn btn-primary">Broadcast</button>
+                        </div>
+                    </form>
+
+                    <!-- Feed -->
+                    <div id="bulletinFeed" style="display: flex; flex-direction: column; gap: 8px;">
+                        <div class="empty-state">No community bulletins broadcasted yet.</div>
+                    </div>
+                </div>
+            </section>
+
+        </div>
+    </div>
+
+    <!-- Dispatch Response Modal Dialog -->
+    <dialog id="dispatchModal">
+        <h2 style="font-size: 1.15rem; font-weight: 700;">🚨 Dispatch Emergency Response</h2>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;" id="modalVictimSubtitle">Victim: Node-A</p>
+
+        <form class="modal-form" id="dispatchForm">
+            <input type="hidden" id="modalSosId">
+            <input type="hidden" id="modalVictimId">
+
+            <div class="modal-field">
+                <label for="modalStatus">Response Status</label>
+                <select id="modalStatus" required>
+                    <option value="DISPATCHED">DISPATCHED (Rescue team mobilized)</option>
+                    <option value="STANDBY">STANDBY (Awaiting clearance/resources)</option>
+                    <option value="RESOLVED">RESOLVED (Victims secured)</option>
+                </select>
+            </div>
+
+            <div class="modal-field">
+                <label for="modalRescuer">Rescuer Unit Designation</label>
+                <input type="text" id="modalRescuer" placeholder="e.g. Boat_Alpha_4 / Medic_Team_2" required>
+            </div>
+
+            <div class="modal-field">
+                <label for="modalEta">Estimated Arrival Time (ETA)</label>
+                <input type="text" id="modalEta" placeholder="e.g. 10-15 mins" required>
+            </div>
+
+            <div class="modal-field">
+                <label for="modalInstructions">Instructions to Victims</label>
+                <textarea id="modalInstructions" rows="3" placeholder="e.g. Move to highest ground, display flashlight or bright cloth..." required></textarea>
+            </div>
+
+            <div class="modal-actions">
+                <button type="button" class="btn" id="modalCancelBtn">Cancel</button>
+                <button type="submit" class="btn btn-primary" id="modalSubmitBtn">Transmit Confirmation</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script>
+        // State Store
+        const state = {
+            nodeDeviceId: "Node-RescueBase",
+            peers: [],
+            routes: [],
+            sosAlerts: new Map(),
+            bulletins: [],
+            stats: {},
+            audioEnabled: true
+        };
+
+        let ws = null;
+        let audioCtx = null;
+        let lastAudioPlayTime = 0;
+
+        // Native Web Audio Chime (Zero external audio assets)
+        function playAlertChime() {
+            if (!state.audioEnabled) return;
+            const now = Date.now();
+            if (now - lastAudioPlayTime < 2000) return; // Throttle to 1 chime per 2s
+            lastAudioPlayTime = now;
+
+            try {
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (audioCtx.state === "suspended") {
+                    audioCtx.resume();
+                }
+
+                // Dual-tone high-low alert beep
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime); // High pitch (A5)
+                osc.frequency.setValueAtTime(587.33, audioCtx.currentTime + 0.15); // Low pitch (D5)
+
+                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.4);
+            } catch (e) {
+                console.warn("Audio playback not permitted yet:", e);
+            }
+        }
+
+        // WebSocket Connection Loop
+        function connectWebSocket() {
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const wsUrl = `${protocol}//${window.location.host}/dashboard-ws`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                document.getElementById("connStatus").classList.remove("disconnected");
+                document.getElementById("connStatusText").textContent = "CONNECTED (LIVE)";
+            };
+
+            ws.onclose = () => {
+                document.getElementById("connStatus").classList.add("disconnected");
+                document.getElementById("connStatusText").textContent = "DISCONNECTED";
+                setTimeout(connectWebSocket, 2000); // Auto reconnect
+            };
+
+            ws.onerror = (err) => {
+                console.error("Dashboard WebSocket error:", err);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleServerMessage(data);
+                } catch (e) {
+                    console.error("Failed to parse server frame:", e);
+                }
+            };
+        }
+
+        function handleServerMessage(msg) {
+            if (msg.type === "INIT_STATE") {
+                state.nodeDeviceId = msg.nodeDeviceId;
+                document.getElementById("localNodeId").textContent = msg.nodeDeviceId;
+                state.peers = msg.peers || [];
+                state.routes = msg.routes || [];
+                state.bulletins = msg.bulletins || [];
+                state.stats = msg.stats || {};
+
+                state.sosAlerts.clear();
+                (msg.sosAlerts || []).forEach(alert => state.sosAlerts.set(alert.sosId, alert));
+
+                renderAll();
+                return;
+            }
+
+            if (msg.type === "SOS_UPSERT") {
+                const isNew = !state.sosAlerts.has(msg.alert.sosId);
+                state.sosAlerts.set(msg.alert.sosId, msg.alert);
+                if (isNew && msg.alert.severity === "CRITICAL" && msg.alert.status === "OPEN") {
+                    playAlertChime();
+                }
+                renderTriage();
+                renderMetrics();
+                return;
+            }
+
+            if (msg.type === "BULLETIN_NEW") {
+                state.bulletins.unshift(msg.bulletin);
+                if (state.bulletins.length > 30) state.bulletins.pop();
+                renderBulletins();
+                renderMetrics();
+                return;
+            }
+
+            if (msg.type === "PEERS_CHANGE") {
+                state.peers = msg.peers || [];
+                renderRoutes();
+                renderMetrics();
+                return;
+            }
+
+            if (msg.type === "ROUTES_CHANGE") {
+                state.routes = msg.routes || [];
+                renderRoutes();
+                return;
+            }
+
+            if (msg.type === "STATS_TICK") {
+                state.stats = msg.stats || {};
+                renderMetrics();
+                return;
+            }
+        }
+
+        // Render Functions (Strict DOM Text Node sanitization to prevent XSS)
+        function renderAll() {
+            renderMetrics();
+            renderTriage();
+            renderRoutes();
+            renderBulletins();
+        }
+
+        function renderMetrics() {
+            let openSosCount = 0;
+            let dispatchedCount = 0;
+
+            for (const a of state.sosAlerts.values()) {
+                if (a.status === "OPEN") openSosCount++;
+                if (a.status === "DISPATCHED") dispatchedCount++;
+            }
+
+            document.getElementById("metricPeers").textContent = state.peers.length;
+            document.getElementById("metricOpenSos").textContent = openSosCount;
+            document.getElementById("metricDispatched").textContent = dispatchedCount;
+            document.getElementById("metricBulletins").textContent = state.bulletins.length;
+        }
+
+        function renderTriage() {
+            const container = document.getElementById("triageList");
+            container.innerHTML = "";
+
+            const alerts = Array.from(state.sosAlerts.values()).sort((a, b) => {
+                const sevRank = { "CRITICAL": 1, "HIGH": 2, "MODERATE": 3 };
+                const rankA = sevRank[a.severity] || 4;
+                const rankB = sevRank[b.severity] || 4;
+                if (rankA !== rankB) return rankA - rankB;
+                return (b.createdAt || b.timestamp || 0) - (a.createdAt || a.timestamp || 0);
+            });
+
+            document.getElementById("triageCountBadge").textContent = `${alerts.length} Incidents`;
+
+            if (alerts.length === 0) {
+                const empty = document.createElement("div");
+                empty.className = "empty-state";
+                empty.textContent = "No emergency distress beacons reported. All clear.";
+                container.appendChild(empty);
+                return;
+            }
+
+            alerts.forEach(alert => {
+                const card = document.createElement("div");
+                card.className = `incident-card ${alert.severity ? alert.severity.toLowerCase() : ""} ${alert.status ? alert.status.toLowerCase() : ""}`;
+
+                // Header Row
+                const header = document.createElement("div");
+                header.className = "incident-header";
+
+                const titleRow = document.createElement("div");
+                titleRow.className = "incident-title-row";
+
+                const sevBadge = document.createElement("span");
+                sevBadge.className = `badge badge-${alert.severity ? alert.severity.toLowerCase() : "critical"}`;
+                sevBadge.textContent = alert.severity || "CRITICAL";
+
+                const typeBadge = document.createElement("span");
+                typeBadge.className = "badge";
+                typeBadge.style.backgroundColor = "#374151";
+                typeBadge.textContent = alert.emergencyType || "EMERGENCY";
+
+                const statusBadge = document.createElement("span");
+                statusBadge.className = `badge badge-${alert.status ? alert.status.toLowerCase() : "open"}`;
+                statusBadge.textContent = alert.status || "OPEN";
+
+                const victimSpan = document.createElement("span");
+                victimSpan.className = "victim-name";
+                victimSpan.textContent = `📍 ${alert.senderDeviceId}`;
+
+                titleRow.appendChild(sevBadge);
+                titleRow.appendChild(typeBadge);
+                titleRow.appendChild(statusBadge);
+                titleRow.appendChild(victimSpan);
+
+                header.appendChild(titleRow);
+
+                // Description Box
+                const descBox = document.createElement("div");
+                descBox.className = "incident-desc";
+                descBox.textContent = `"${alert.description || "No description provided."}"`;
+
+                // Meta Row (Victims count, landmark, proximity)
+                const metaRow = document.createElement("div");
+                metaRow.className = "incident-meta";
+
+                const victimsMeta = document.createElement("span");
+                victimsMeta.className = "meta-item";
+                victimsMeta.textContent = `👥 ${alert.peopleCount || 1} Person(s)`;
+
+                const landmarkMeta = document.createElement("span");
+                landmarkMeta.className = "meta-item";
+                landmarkMeta.textContent = `📌 ${alert.landmark || alert.location?.landmark || "Unknown Landmark"}`;
+
+                const hopsAway = alert.hopsFromAnchor !== undefined ? alert.hopsFromAnchor : (alert.hopCount || 0);
+                const estRadius = alert.estimatedRadiusMeters || (50 + hopsAway * 75);
+                const distMeta = document.createElement("span");
+                distMeta.className = "meta-item";
+                distMeta.textContent = `📏 ${hopsAway} Hop(s) away (~${estRadius}m search radius)`;
+
+                metaRow.appendChild(victimsMeta);
+                metaRow.appendChild(landmarkMeta);
+                metaRow.appendChild(distMeta);
+
+                // Proximity Chain Breadcrumb
+                let chain = [];
+                try {
+                    chain = Array.isArray(alert.proximityChainJson) 
+                        ? alert.proximityChainJson 
+                        : JSON.parse(alert.proximityChainJson || JSON.stringify(alert.location?.proximityChain || []));
+                } catch (e) {
+                    chain = [alert.senderDeviceId];
+                }
+
+                const chainBox = document.createElement("div");
+                chainBox.className = "proximity-chain";
+                const chainLabel = document.createElement("span");
+                chainLabel.style.color = "#9ca3af";
+                chainLabel.textContent = "Topology Trace:";
+                chainBox.appendChild(chainLabel);
+
+                chain.forEach((node, idx) => {
+                    const nodeSpan = document.createElement("span");
+                    nodeSpan.textContent = node;
+                    chainBox.appendChild(nodeSpan);
+                    if (idx < chain.length - 1) {
+                        const arrow = document.createElement("span");
+                        arrow.className = "chain-arrow";
+                        arrow.textContent = "➔";
+                        chainBox.appendChild(arrow);
+                    }
+                });
+
+                // Rescuer info if dispatched
+                if (alert.rescuerDeviceId) {
+                    const rescuerInfo = document.createElement("div");
+                    rescuerInfo.style.fontSize = "0.8rem";
+                    rescuerInfo.style.color = "#10b981";
+                    rescuerInfo.textContent = `✅ Assigned Unit: ${alert.rescuerDeviceId} | Note: "${alert.rescuerInstructions || ""}"`;
+                    card.appendChild(rescuerInfo);
+                }
+
+                // Action Buttons
+                const actionRow = document.createElement("div");
+                actionRow.className = "incident-actions";
+
+                const dispatchBtn = document.createElement("button");
+                dispatchBtn.className = "btn btn-primary";
+                dispatchBtn.textContent = alert.status === "DISPATCHED" ? "Update Response" : "Dispatch Unit";
+                dispatchBtn.onclick = () => openDispatchModal(alert);
+
+                actionRow.appendChild(dispatchBtn);
+
+                card.appendChild(header);
+                card.appendChild(descBox);
+                card.appendChild(metaRow);
+                card.appendChild(chainBox);
+                card.appendChild(actionRow);
+
+                container.appendChild(card);
+            });
+        }
+
+        function renderRoutes() {
+            const tbody = document.getElementById("routesTableBody");
+            tbody.innerHTML = "";
+
+            document.getElementById("peerCountBadge").textContent = `${state.peers.length} Direct Peers`;
+
+            if (state.routes.length === 0 && state.peers.length === 0) {
+                const tr = document.createElement("tr");
+                const td = document.createElement("td");
+                td.colSpan = 4;
+                td.className = "empty-state";
+                td.textContent = "No active routes detected yet.";
+                tr.appendChild(td);
+                tbody.appendChild(tr);
+                return;
+            }
+
+            // Combine direct peers & AODV routes
+            const displayed = new Map();
+
+            state.peers.forEach(peerId => {
+                displayed.set(peerId, {
+                    destination: peerId,
+                    nextHop: peerId,
+                    hopDistance: 1,
+                    isDirect: true
+                });
+            });
+
+            state.routes.forEach(r => {
+                if (!displayed.has(r.destination)) {
+                    displayed.set(r.destination, {
+                        destination: r.destination,
+                        nextHop: r.nextHop,
+                        hopDistance: r.hopDistance,
+                        isDirect: false
+                    });
+                }
+            });
+
+            displayed.forEach(entry => {
+                const tr = document.createElement("tr");
+
+                const tdDest = document.createElement("td");
+                tdDest.textContent = entry.destination;
+                if (entry.isDirect) {
+                    const directBadge = document.createElement("span");
+                    directBadge.className = "badge badge-dispatched";
+                    directBadge.style.fontSize = "0.65rem";
+                    directBadge.style.marginLeft = "6px";
+                    directBadge.textContent = "DIRECT";
+                    tdDest.appendChild(directBadge);
+                }
+
+                const tdHop = document.createElement("td");
+                tdHop.textContent = entry.nextHop;
+
+                const tdCount = document.createElement("td");
+                tdCount.textContent = entry.hopDistance;
+
+                const tdRadius = document.createElement("td");
+                tdRadius.textContent = `~${entry.hopDistance * 75}m`;
+
+                tr.appendChild(tdDest);
+                tr.appendChild(tdHop);
+                tr.appendChild(tdCount);
+                tr.appendChild(tdRadius);
+
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderBulletins() {
+            const feed = document.getElementById("bulletinFeed");
+            feed.innerHTML = "";
+
+            if (state.bulletins.length === 0) {
+                const empty = document.createElement("div");
+                empty.className = "empty-state";
+                empty.textContent = "No community bulletins broadcasted yet.";
+                feed.appendChild(empty);
+                return;
+            }
+
+            state.bulletins.forEach(b => {
+                const item = document.createElement("div");
+                item.className = "bulletin-item";
+
+                const hdr = document.createElement("div");
+                hdr.className = "bulletin-header";
+
+                const badge = document.createElement("span");
+                badge.className = "badge badge-high";
+                badge.textContent = b.hazardType;
+
+                const time = document.createElement("span");
+                time.textContent = new Date(b.timestamp).toLocaleTimeString();
+
+                hdr.appendChild(badge);
+                hdr.appendChild(time);
+
+                const txt = document.createElement("div");
+                txt.className = "bulletin-text";
+                txt.textContent = `"${b.announcement}"`;
+
+                const sender = document.createElement("div");
+                sender.style.fontSize = "0.75rem";
+                sender.style.color = "#9ca3af";
+                sender.textContent = `Issued by: ${b.senderDeviceId}`;
+
+                item.appendChild(hdr);
+                item.appendChild(txt);
+                item.appendChild(sender);
+
+                feed.appendChild(item);
+            });
+        }
+
+        // Modal Logic
+        const modal = document.getElementById("dispatchModal");
+        function openDispatchModal(alert) {
+            document.getElementById("modalSosId").value = alert.sosId;
+            document.getElementById("modalVictimId").value = alert.senderDeviceId;
+            document.getElementById("modalVictimSubtitle").textContent = `Victim: ${alert.senderDeviceId} (${alert.emergencyType} - ${alert.severity})`;
+            document.getElementById("modalStatus").value = alert.status === "OPEN" ? "DISPATCHED" : alert.status;
+            document.getElementById("modalRescuer").value = alert.rescuerDeviceId || "Rescue_Unit_1";
+            document.getElementById("modalEta").value = "15-20 mins";
+            document.getElementById("modalInstructions").value = alert.rescuerInstructions || "Help is en route. Stay where you are and conserve phone battery.";
+            modal.showModal();
+        }
+
+        document.getElementById("modalCancelBtn").onclick = () => modal.close();
+
+        document.getElementById("dispatchForm").onsubmit = (e) => {
+            e.preventDefault();
+            const sosId = document.getElementById("modalSosId").value;
+            const status = document.getElementById("modalStatus").value;
+            const rescuerId = document.getElementById("modalRescuer").value.trim();
+            const eta = document.getElementById("modalEta").value.trim();
+            const instructions = document.getElementById("modalInstructions").value.trim();
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "ACTION_DISPATCH",
+                    sosId,
+                    status,
+                    rescuerId,
+                    eta,
+                    instructions
+                }));
+            }
+
+            modal.close();
+        };
+
+        // Bulletin Form Submit
+        document.getElementById("bulletinForm").onsubmit = (e) => {
+            e.preventDefault();
+            const hazardType = document.getElementById("hazardTypeSelect").value;
+            const announcement = document.getElementById("announcementInput").value.trim();
+            if (!announcement) return;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "ACTION_BULLETIN",
+                    hazardType,
+                    announcement
+                }));
+                document.getElementById("announcementInput").value = "";
+            }
+        };
+
+        // Audio Toggle
+        const audioBtn = document.getElementById("audioToggleBtn");
+        audioBtn.onclick = () => {
+            state.audioEnabled = !state.audioEnabled;
+            audioBtn.textContent = state.audioEnabled ? "🔊 Audio: ON" : "🔇 Audio: MUTED";
+            audioBtn.style.color = state.audioEnabled ? "#f9fafb" : "#9ca3af";
+            if (state.audioEnabled) playAlertChime();
+        };
+
+        // Manual Refresh Sync
+        document.getElementById("refreshBtn").onclick = () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "REQ_SYNC" }));
+            }
+        };
+
+        // Boot
+        window.addEventListener("DOMContentLoaded", () => {
+            connectWebSocket();
+        });
+    </script>
+</body>
+</html>

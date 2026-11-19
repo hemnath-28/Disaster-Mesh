@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID } from "crypto";
 import readline from "readline";
+import { EventEmitter } from "events";
 import {
     Message,
     AckMessage,
@@ -21,6 +22,7 @@ import {
 } from "./types.js";
 import { PeerDiscovery } from "./discovery.js";
 import { MessageStore } from "./storage.js";
+import { startDashboardServer, stopDashboardServer } from "./dashboard.js";
 
 // Configuration via environment or arguments
 const HOST = process.env.HOST || "0.0.0.0";
@@ -29,17 +31,24 @@ const DEVICE_ID = process.env.DEVICE_ID || process.argv[3] || `Node-${randomUUID
 const MANUAL_PEER = process.env.PEER_URL || process.argv[4] || "";
 const ENABLE_MDNS = process.env.ENABLE_MDNS !== "false";
 const IS_RESCUE_BASE = process.env.IS_RESCUE_BASE === "true" || process.argv.includes("--rescue");
+const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT || (PORT + 1000).toString(), 10);
+
+// Decoupled internal event emitter for UI & operational telemetry
+export const meshEvents = new EventEmitter();
 
 console.log("=========================================");
 console.log(` 🚨 DisasterMesh Crisis Node: ${DEVICE_ID}`);
 console.log(` Role:               ${IS_RESCUE_BASE ? "RESCUE BASE / OPS COMMAND" : "FIELD / VICTIM NODE"}`);
 console.log(` WebSocket Port:     ${PORT}`);
+if (IS_RESCUE_BASE) {
+    console.log(` Web Dashboard:      http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${DASHBOARD_PORT}`);
+}
 console.log(` mDNS Auto-Discovery:${ENABLE_MDNS ? "ENABLED" : "DISABLED"}`);
 console.log(` Storage (SQLite):    ENABLED (data/store-${DEVICE_ID}.db)`);
 console.log("=========================================");
 
 // Phase 5 & 6: Persistent Storage
-const storage = new MessageStore(DEVICE_ID);
+export const storage = new MessageStore(DEVICE_ID);
 
 // Active connections: deviceId -> WebSocket
 const peers = new Map<string, WebSocket>();
@@ -48,6 +57,14 @@ const knownPeerUrls = new Set<string>();
 // Routing Table
 const routingTable = new Map<string, RouteEntry>();
 const ROUTE_TTL_MS = 5 * 60 * 1000;
+
+export function getActivePeers(): string[] {
+    return Array.from(peers.keys());
+}
+
+export function getRoutingTable(): RouteEntry[] {
+    return Array.from(routingTable.values());
+}
 
 // Message queues & active discovery
 const messageWaitQueue = new Map<string, Array<{ message: Message; ttl: number }>>();
@@ -85,6 +102,10 @@ const stats = {
     droppedLoops: 0
 };
 
+export function getStats(): typeof stats {
+    return { ...stats };
+}
+
 function isDuplicate(packetKey: string): boolean {
     const now = Date.now();
     if (seenPackets.size > 1000) {
@@ -114,6 +135,7 @@ function updateRoute(destination: string, nextHop: string, hopDistance: number):
             expiresAt: Date.now() + ROUTE_TTL_MS
         });
         checkAndFlushPending(destination);
+        meshEvents.emit("routes:change", getRoutingTable());
     }
 }
 
@@ -278,6 +300,8 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 console.log(`[PEER] Identified: ${remoteDeviceId} (${direction}) | Active peers: ${peers.size}`);
                 checkAndFlushPending(remoteDeviceId);
                 syncCrisisStateToPeer(socket, remoteDeviceId);
+                meshEvents.emit("peer:change", getActivePeers());
+                meshEvents.emit("routes:change", getRoutingTable());
                 return;
             }
 
@@ -338,6 +362,8 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
         if (remoteDeviceId && peers.get(remoteDeviceId) === socket) {
             peers.delete(remoteDeviceId);
             console.log(`[PEER] Disconnected: ${remoteDeviceId} | Active peers: ${peers.size}`);
+            meshEvents.emit("peer:change", getActivePeers());
+            meshEvents.emit("routes:change", getRoutingTable());
 
             const brokenDestinations: string[] = [];
             for (const [dest, entry] of routingTable.entries()) {
@@ -400,6 +426,8 @@ export function broadcastSos(
 
     isDuplicate(`SOS-${sosAlert.sosId}`);
     storage.saveSosAlert(sosAlert);
+    meshEvents.emit("sos:upsert", sosAlert);
+    meshEvents.emit("routes:change", getRoutingTable());
 
     console.log("\n=======================================================");
     console.log("🚨🚨🚨 EMERGENCY SOS BEACON BROADCASTED 🚨🚨🚨");
@@ -449,6 +477,8 @@ function handleSosAlert(sos: SosAlert, sourceSocket: WebSocket): void {
 
     // Store in local triage registry
     storage.saveSosAlert(updatedSos);
+    meshEvents.emit("sos:upsert", updatedSos);
+    meshEvents.emit("routes:change", getRoutingTable());
 
     // Learn reverse route to victim!
     const previousHop = sos.routePath[sos.routePath.length - 1];
@@ -485,6 +515,8 @@ export function respondToSos(
 
     stats.rescueAcksSent++;
     storage.updateSosStatus(sosId, status, DEVICE_ID, instructions);
+    const updatedAlert = storage.getSosAlert(sosId);
+    if (updatedAlert) meshEvents.emit("sos:upsert", updatedAlert);
 
     const rescueAck: RescueAck = {
         type: "RESCUE_ACK",
@@ -531,6 +563,8 @@ function handleRescueAck(ack: RescueAck, sourceSocket: WebSocket): void {
 
     stats.rescueAcksReceived++;
     storage.updateSosStatus(ack.sosId, ack.status, ack.rescuerDeviceId, ack.instructions);
+    const updatedAckAlert = storage.getSosAlert(ack.sosId);
+    if (updatedAckAlert) meshEvents.emit("sos:upsert", updatedAckAlert);
 
     // If WE are the victim node
     if (ack.victimDeviceId === DEVICE_ID) {
@@ -579,6 +613,7 @@ export function broadcastBulletin(hazardType: HazardType, announcement: string):
 
     isDuplicate(`BULLETIN-${bulletin.bulletinId}`);
     storage.saveBulletin(bulletin);
+    meshEvents.emit("bulletin:new", bulletin);
 
     console.log("\n⚠️⚠️⚠️ [PUBLIC HAZARD BULLETIN BROADCASTED] ⚠️⚠️⚠️");
     console.log(`Hazard:       ${hazardType}`);
@@ -600,6 +635,7 @@ function handleDisasterBulletin(bulletin: DisasterBulletin, sourceSocket: WebSoc
 
     stats.bulletinsReceived++;
     storage.saveBulletin(bulletin);
+    meshEvents.emit("bulletin:new", bulletin);
 
     console.log("\n⚠️⚠️⚠️ [COMMUNITY DISASTER WARNING] ⚠️⚠️⚠️");
     console.log(`Issued By:    ${bulletin.senderDeviceId}`);
@@ -877,6 +913,22 @@ if (MANUAL_PEER) {
     connectToPeer(MANUAL_PEER);
 }
 
+// Start visual operations dashboard if running as Rescue Base
+if (IS_RESCUE_BASE) {
+    startDashboardServer({
+        host: HOST,
+        port: DASHBOARD_PORT,
+        nodeDeviceId: DEVICE_ID,
+        storage,
+        respondToSos,
+        broadcastBulletin,
+        getActivePeers,
+        getRoutingTable,
+        getStats,
+        meshEvents
+    });
+}
+
 // ==================== Crisis Command Terminal CLI ====================
 const rl = readline.createInterface({
     input: process.stdin,
@@ -965,6 +1017,7 @@ rl.on("line", (line) => {
         connectToPeer(parts[1]);
     } else if (cmd === "quit" || cmd === "exit") {
         if (discoveryService) discoveryService.stop();
+        stopDashboardServer();
         storage.close();
         server.close();
         process.exit(0);
