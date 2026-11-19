@@ -165,7 +165,22 @@ export function checkAndFlushPending(destinationDeviceId: string): void {
     if (pendingMessages.length === 0) return;
 
     const route = getValidRoute(destinationDeviceId);
-    if (!route) return;
+    if (!route) {
+        if (!pendingRouteRequests.has(destinationDeviceId)) {
+            pendingRouteRequests.add(destinationDeviceId);
+            setTimeout(() => pendingRouteRequests.delete(destinationDeviceId), 3000);
+            broadcastPacket({
+                type: "RREQ",
+                requestId: randomUUID(),
+                originDeviceId: DEVICE_ID,
+                targetDeviceId: destinationDeviceId,
+                hopCount: 0,
+                ttl: 5,
+                routePath: [DEVICE_ID]
+            });
+        }
+        return;
+    }
 
     for (const msg of pendingMessages) {
         storage.markInTransit(msg.messageId);
@@ -299,6 +314,9 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 updateRoute(remoteDeviceId, remoteDeviceId, 1);
                 console.log(`[PEER] Identified: ${remoteDeviceId} (${direction}) | Active peers: ${peers.size}`);
                 checkAndFlushPending(remoteDeviceId);
+                for (const pendingDest of storage.getAllPendingReceivers()) {
+                    checkAndFlushPending(pendingDest);
+                }
                 syncCrisisStateToPeer(socket, remoteDeviceId);
                 meshEvents.emit("peer:change", getActivePeers());
                 meshEvents.emit("routes:change", getRoutingTable());
@@ -761,12 +779,31 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
     }
 }
 
+export function sendDirectedMessage(targetDeviceId: string, text: string): void {
+    const msg: Message = {
+        type: "MESSAGE",
+        messageId: randomUUID(),
+        senderDeviceId: DEVICE_ID,
+        receiverDeviceId: targetDeviceId,
+        payload: text,
+        timestamp: Date.now(),
+        ttl: 5,
+        hopCount: 0,
+        routePath: [DEVICE_ID]
+    };
+    isDuplicate(msg.messageId);
+    console.log(`[DISPATCH] Sending message to ${targetDeviceId}: "${text}"`);
+    dispatchDirectedMessage(msg);
+}
+
 function dispatchDirectedMessage(message: Message): void {
     const route = getValidRoute(message.receiverDeviceId);
     if (route) {
         stats.directedForwarded++;
         sendDirected(route.nextHop, message);
     } else {
+        storage.saveMessage(message, "PENDING");
+        console.log(`[STORAGE] No route to ${message.receiverDeviceId}. Message ${message.messageId} buffered to SQLite (PENDING)`);
         if (!messageWaitQueue.has(message.receiverDeviceId)) {
             messageWaitQueue.set(message.receiverDeviceId, []);
         }
@@ -774,6 +811,7 @@ function dispatchDirectedMessage(message: Message): void {
 
         if (!pendingRouteRequests.has(message.receiverDeviceId)) {
             pendingRouteRequests.add(message.receiverDeviceId);
+            setTimeout(() => pendingRouteRequests.delete(message.receiverDeviceId), 3000);
             broadcastPacket({
                 type: "RREQ",
                 requestId: randomUUID(),
@@ -804,6 +842,7 @@ function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
     if (message.ttl <= 1) return;
 
     stats.relayedMessages++;
+    console.log(`[RELAY] Relayed message from ${message.senderDeviceId} towards ${message.receiverDeviceId}: "${message.payload}"`);
     const relayed: Message = {
         ...message,
         ttl: message.ttl - 1,
@@ -893,6 +932,15 @@ setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send(payload);
     }
 }, 15000);
+
+// Phase 5 Store-and-Forward: Periodic retry worker for partitioned messages
+setInterval(() => {
+    if (peers.size === 0) return;
+    const pendingReceivers = storage.getAllPendingReceivers();
+    for (const target of pendingReceivers) {
+        checkAndFlushPending(target);
+    }
+}, 3000);
 
 // mDNS Discovery
 let discoveryService: PeerDiscovery | null = null;
@@ -1013,6 +1061,14 @@ rl.on("line", (line) => {
     } else if (cmd === "peers") {
         console.log(`Connected peers (${peers.size}):`);
         for (const [id] of peers.entries()) console.log(`  - ${id}`);
+    } else if (cmd === "msg") {
+        if (parts.length < 3) {
+            console.log("Usage: msg <targetDeviceId> <text>");
+            return;
+        }
+        const target = parts[1];
+        const text = parts.slice(2).join(" ");
+        sendDirectedMessage(target, text);
     } else if (cmd === "connect" && parts[1]) {
         connectToPeer(parts[1]);
     } else if (cmd === "quit" || cmd === "exit") {
@@ -1022,6 +1078,6 @@ rl.on("line", (line) => {
         server.close();
         process.exit(0);
     } else {
-        console.log("Commands: sos | respond | warn | triage | bulletins | routes | peers | connect | quit");
+        console.log("Commands: sos | respond | warn | triage | bulletins | routes | peers | connect | msg | quit");
     }
 });

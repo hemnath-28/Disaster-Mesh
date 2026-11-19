@@ -10,6 +10,8 @@
     "mdns": "tsx src/discovery.ts",
     "test:mesh": "tsx src/test-mesh.ts",
     "test:dashboard": "tsx src/test-dashboard.ts",
+    "test:failover": "tsx src/test-failover.ts",
+    "test:partition": "tsx src/test-partition.ts",
     "demo": "tsx src/demo.ts"
   },
   "repository": {
