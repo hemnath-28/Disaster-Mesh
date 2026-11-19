@@ -32,6 +32,7 @@ const MANUAL_PEER = process.env.PEER_URL || process.argv[4] || "";
 const ENABLE_MDNS = process.env.ENABLE_MDNS !== "false";
 const IS_RESCUE_BASE = process.env.IS_RESCUE_BASE === "true" || process.argv.includes("--rescue");
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT || (PORT + 1000).toString(), 10);
+const STORAGE_DIR = process.env.STORAGE_DIR || "./data";
 
 // Decoupled internal event emitter for UI & operational telemetry
 export const meshEvents = new EventEmitter();
@@ -48,7 +49,7 @@ console.log(` Storage (SQLite):    ENABLED (data/store-${DEVICE_ID}.db)`);
 console.log("=========================================");
 
 // Phase 5 & 6: Persistent Storage
-export const storage = new MessageStore(DEVICE_ID);
+export const storage = new MessageStore(DEVICE_ID, STORAGE_DIR);
 
 // Active connections: deviceId -> WebSocket
 const peers = new Map<string, WebSocket>();
@@ -118,6 +119,7 @@ function isDuplicate(packetKey: string): boolean {
 
     if (seenPackets.has(packetKey)) {
         stats.droppedDuplicates++;
+        console.log(`[DEDUPE] Suppressed duplicate packet: ${packetKey}`);
         return true;
     }
 
@@ -779,7 +781,7 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
     }
 }
 
-export function sendDirectedMessage(targetDeviceId: string, text: string): void {
+export function sendDirectedMessage(targetDeviceId: string, text: string, ttl: number = 5): void {
     const msg: Message = {
         type: "MESSAGE",
         messageId: randomUUID(),
@@ -787,12 +789,12 @@ export function sendDirectedMessage(targetDeviceId: string, text: string): void 
         receiverDeviceId: targetDeviceId,
         payload: text,
         timestamp: Date.now(),
-        ttl: 5,
+        ttl: ttl,
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
     isDuplicate(msg.messageId);
-    console.log(`[DISPATCH] Sending message to ${targetDeviceId}: "${text}"`);
+    console.log(`[DISPATCH] Sending message to ${targetDeviceId} (TTL: ${ttl}): "${text}"`);
     dispatchDirectedMessage(msg);
 }
 
@@ -826,7 +828,12 @@ function dispatchDirectedMessage(message: Message): void {
 }
 
 function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
-    if (isDuplicate(message.messageId) || (message.routePath ?? []).includes(DEVICE_ID)) return;
+    if (isDuplicate(message.messageId)) return;
+    if ((message.routePath ?? []).includes(DEVICE_ID)) {
+        stats.droppedLoops++;
+        console.log(`[LOOP] Suppressed packet loop: ${message.messageId} already passed through ${DEVICE_ID}`);
+        return;
+    }
 
     const currentPath = message.routePath ? [...message.routePath] : [];
 
@@ -839,7 +846,11 @@ function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
         }
     }
 
-    if (message.ttl <= 1) return;
+    if (message.ttl <= 1) {
+        stats.droppedExpiredTtl++;
+        console.log(`[TTL] Dropped expired packet ${message.messageId} at ${DEVICE_ID} (TTL reached 0)`);
+        return;
+    }
 
     stats.relayedMessages++;
     console.log(`[RELAY] Relayed message from ${message.senderDeviceId} towards ${message.receiverDeviceId}: "${message.payload}"`);
@@ -1061,14 +1072,23 @@ rl.on("line", (line) => {
     } else if (cmd === "peers") {
         console.log(`Connected peers (${peers.size}):`);
         for (const [id] of peers.entries()) console.log(`  - ${id}`);
+    } else if (cmd === "stats") {
+        console.log(`\n=== Node Metrics & Telemetry ===`);
+        console.log(JSON.stringify(stats, null, 2));
+        console.log("=================================\n");
     } else if (cmd === "msg") {
         if (parts.length < 3) {
-            console.log("Usage: msg <targetDeviceId> <text>");
+            console.log("Usage: msg <targetDeviceId> <text> [ttl]");
             return;
         }
         const target = parts[1];
-        const text = parts.slice(2).join(" ");
-        sendDirectedMessage(target, text);
+        let customTtl = 5;
+        const textParts = parts.slice(2);
+        if (textParts.length > 1 && !isNaN(parseInt(textParts[textParts.length - 1], 10))) {
+            customTtl = parseInt(textParts.pop()!, 10);
+        }
+        const text = textParts.join(" ");
+        sendDirectedMessage(target, text, customTtl);
     } else if (cmd === "connect" && parts[1]) {
         connectToPeer(parts[1]);
     } else if (cmd === "quit" || cmd === "exit") {

@@ -12,6 +12,9 @@
     "test:dashboard": "tsx src/test-dashboard.ts",
     "test:failover": "tsx src/test-failover.ts",
     "test:partition": "tsx src/test-partition.ts",
+    "test:dedupe": "tsx src/test-dedupe.ts",
+    "test:ttl": "tsx src/test-ttl.ts",
+    "test:stress": "tsx src/test-stress.ts",
     "demo": "tsx src/demo.ts"
   },
   "repository": {
