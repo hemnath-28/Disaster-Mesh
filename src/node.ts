@@ -67,8 +67,7 @@ export function getRoutingTable(): RouteEntry[] {
     return Array.from(routingTable.values());
 }
 
-// Message queues & active discovery
-const messageWaitQueue = new Map<string, Array<{ message: Message; ttl: number }>>();
+// Active route discovery tracking
 const pendingRouteRequests = new Set<string>();
 
 // Pending ACKs
@@ -196,7 +195,10 @@ export function checkAndFlushPending(destinationDeviceId: string): void {
     }
 
     for (const msg of pendingMessages) {
-        msg.ttl = getAdaptiveTtl(destinationDeviceId);
+        if (msg.ttl === DEFAULT_SEARCH_TTL) {
+            msg.ttl = getAdaptiveTtl(destinationDeviceId);
+            console.log(`[ROUTE-AWARE] Route resolved for ${destinationDeviceId} (distance: ${route.hopDistance}) -> Adaptive TTL dynamically set to ${msg.ttl}`);
+        }
         storage.markInTransit(msg.messageId);
         stats.directedForwarded++;
         sendDirected(route.nextHop, msg);
@@ -769,11 +771,6 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
 
     if (rrep.originDeviceId === DEVICE_ID) {
         pendingRouteRequests.delete(rrep.targetDeviceId);
-        const queued = messageWaitQueue.get(rrep.targetDeviceId);
-        if (queued) {
-            messageWaitQueue.delete(rrep.targetDeviceId);
-            for (const item of queued) dispatchDirectedMessage(item.message);
-        }
         checkAndFlushPending(rrep.targetDeviceId);
         return;
     }
@@ -823,10 +820,6 @@ function dispatchDirectedMessage(message: Message): void {
     } else {
         storage.saveMessage(message, "PENDING");
         console.log(`[STORAGE] No route to ${message.receiverDeviceId}. Message ${message.messageId} buffered to SQLite (PENDING)`);
-        if (!messageWaitQueue.has(message.receiverDeviceId)) {
-            messageWaitQueue.set(message.receiverDeviceId, []);
-        }
-        messageWaitQueue.get(message.receiverDeviceId)!.push({ message, ttl: message.ttl });
 
         if (!pendingRouteRequests.has(message.receiverDeviceId)) {
             pendingRouteRequests.add(message.receiverDeviceId);
@@ -1099,7 +1092,7 @@ rl.on("line", (line) => {
             return;
         }
         const target = parts[1];
-        let customTtl = 5;
+        let customTtl: number | undefined = undefined;
         const textParts = parts.slice(2);
         if (textParts.length > 1 && !isNaN(parseInt(textParts[textParts.length - 1], 10))) {
             customTtl = parseInt(textParts.pop()!, 10);
