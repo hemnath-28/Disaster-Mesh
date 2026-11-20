@@ -68,6 +68,12 @@ export function getActivePeers(): string[] {
 }
 
 export function getRoutingTable(): RouteEntry[] {
+    const now = Date.now();
+    for (const [dest, entry] of routingTable.entries()) {
+        if (now > entry.expiresAt || (!peers.has(dest) && !peers.has(entry.nextHop))) {
+            routingTable.delete(dest);
+        }
+    }
     return Array.from(routingTable.values());
 }
 
@@ -205,7 +211,10 @@ export function checkAndFlushPending(destinationDeviceId: string): void {
         }
         storage.markInTransit(msg.messageId);
         stats.directedForwarded++;
-        sendDirected(route.nextHop, msg);
+        const sent = sendDirected(route.nextHop, msg);
+        if (sent) {
+            registerPendingAck(msg);
+        }
     }
 }
 
@@ -953,7 +962,24 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
     }
 }
 
+function registerPendingAck(message: Message): void {
+    if (message.senderDeviceId !== DEVICE_ID) return;
+    if (pendingAcks.has(message.messageId)) {
+        clearTimeout(pendingAcks.get(message.messageId)!.timer);
+    }
+    const timer = setTimeout(() => {
+        pendingAcks.delete(message.messageId);
+        const record = storage.getAllStoredRecords().find(r => r.messageId === message.messageId);
+        if (record && record.status !== "DELIVERED" && record.retryCount <= 3) {
+            console.log(`[ACK TIMEOUT] Message ${message.messageId} to ${message.receiverDeviceId} unacknowledged. Retrying...`);
+            dispatchDirectedMessage(message);
+        }
+    }, ACK_TIMEOUT_MS);
+    pendingAcks.set(message.messageId, { message, sentAt: Date.now(), timer });
+}
+
 export function sendDirectedMessage(targetDeviceId: string, text: string, customTtl?: number): void {
+    stats.originatedMessages++;
     const calculatedTtl = customTtl !== undefined ? customTtl : getAdaptiveTtl(targetDeviceId);
     const msg: Message = {
         type: "MESSAGE",
@@ -979,24 +1005,28 @@ function dispatchDirectedMessage(message: Message): void {
             console.log(`[ROUTE-AWARE] Route resolved for ${message.receiverDeviceId} (distance: ${route.hopDistance}) -> Adaptive TTL dynamically set to ${message.ttl}`);
         }
         stats.directedForwarded++;
-        sendDirected(route.nextHop, message);
-    } else {
-        storage.saveMessage(message, "PENDING");
-        console.log(`[STORAGE] No route to ${message.receiverDeviceId}. Message ${message.messageId} buffered to SQLite (PENDING)`);
-
-        if (!pendingRouteRequests.has(message.receiverDeviceId)) {
-            pendingRouteRequests.add(message.receiverDeviceId);
-            setTimeout(() => pendingRouteRequests.delete(message.receiverDeviceId), 3000);
-            broadcastPacket({
-                type: "RREQ",
-                requestId: randomUUID(),
-                originDeviceId: DEVICE_ID,
-                targetDeviceId: message.receiverDeviceId,
-                hopCount: 0,
-                ttl: DEFAULT_SEARCH_TTL,
-                routePath: [DEVICE_ID]
-            });
+        const sent = sendDirected(route.nextHop, message);
+        if (sent) {
+            registerPendingAck(message);
+            return;
         }
+    }
+
+    storage.saveMessage(message, "PENDING");
+    console.log(`[STORAGE] No route to ${message.receiverDeviceId}. Message ${message.messageId} buffered to SQLite (PENDING)`);
+
+    if (!pendingRouteRequests.has(message.receiverDeviceId)) {
+        pendingRouteRequests.add(message.receiverDeviceId);
+        setTimeout(() => pendingRouteRequests.delete(message.receiverDeviceId), 3000);
+        broadcastPacket({
+            type: "RREQ",
+            requestId: randomUUID(),
+            originDeviceId: DEVICE_ID,
+            targetDeviceId: message.receiverDeviceId,
+            hopCount: 0,
+            ttl: DEFAULT_SEARCH_TTL,
+            routePath: [DEVICE_ID]
+        });
     }
 }
 
@@ -1100,6 +1130,7 @@ function sendDirected(nextHopDeviceId: string, packet: MeshPacket): boolean {
 }
 
 function broadcastPacket(packet: MeshPacket, exceptSocket?: WebSocket): void {
+    stats.floodedForwarded++;
     const payload = JSON.stringify(packet);
     for (const [peerId, socket] of peers.entries()) {
         if (socket !== exceptSocket && socket.readyState === WebSocket.OPEN) {
