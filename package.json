@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "tsx src/server.ts",
+    "start": "tsx src/node.ts",
     "client": "tsx src/client.ts",
     "mesh": "tsx src/node.ts",
     "mdns": "tsx src/discovery.ts",

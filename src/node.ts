@@ -284,6 +284,22 @@ const captivePaths = new Set([
     "/ncsi.txt"                   // Windows
 ]);
 
+let cachedMobileHtml: string | null = null;
+function getMobileHtml(): string {
+    if (cachedMobileHtml) return cachedMobileHtml;
+    const candidates = [
+        path.join(process.cwd(), "src", "web", "mobile.html"),
+        path.resolve("./src/web/mobile.html")
+    ];
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            cachedMobileHtml = fs.readFileSync(candidate, "utf-8");
+            return cachedMobileHtml;
+        }
+    }
+    return `<!DOCTYPE html><html><body><h1>DisasterMesh Mobile Portal</h1></body></html>`;
+}
+
 const httpServer = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
     const pathname = parsedUrl.pathname;
@@ -299,21 +315,12 @@ const httpServer = http.createServer((req, res) => {
     }
 
     if (pathname === "/mobile" || pathname === "/") {
-        const candidates = [
-            path.join(process.cwd(), "src", "web", "mobile.html"),
-            path.resolve("./src/web/mobile.html")
-        ];
-        for (const candidate of candidates) {
-            if (fs.existsSync(candidate)) {
-                const html = fs.readFileSync(candidate, "utf-8");
-                res.writeHead(200, {
-                    "Content-Type": "text/html; charset=utf-8",
-                    "Cache-Control": "no-cache"
-                });
-                res.end(html);
-                return;
-            }
-        }
+        res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-cache"
+        });
+        res.end(getMobileHtml());
+        return;
     }
 
     res.writeHead(404, { "Content-Type": "text/plain" });
@@ -321,7 +328,7 @@ const httpServer = http.createServer((req, res) => {
 });
 
 // ==================== WebSocket Server (Mesh & Mobile) ====================
-const server = new WebSocketServer({ server: httpServer });
+const server = new WebSocketServer({ server: httpServer, maxPayload: 1024 * 1024 });
 
 server.on("connection", (socket: WebSocket, req: http.IncomingMessage) => {
     const reqUrl = req.url || "/";
@@ -341,12 +348,20 @@ server.on("connection", (socket: WebSocket, req: http.IncomingMessage) => {
                 const packet = JSON.parse(data.toString());
                 if (packet.type === "PHONE_SOS") {
                     console.log(`[MOBILE GATEWAY] Received Phone SOS from mobile client`);
+                    const validTypes = new Set(["TRAPPED", "MEDICAL", "SUPPLIES", "EVACUATION"]);
+                    const validSeverities = new Set(["CRITICAL", "HIGH", "MODERATE"]);
+                    const emergencyType = (validTypes.has(packet.emergencyType) ? packet.emergencyType : "TRAPPED") as EmergencyType;
+                    const severity = (validSeverities.has(packet.severity) ? packet.severity : "CRITICAL") as EmergencySeverity;
+                    const peopleCount = Math.max(1, Math.min(999, parseInt(packet.peopleCount, 10) || 1));
+                    const description = String(packet.description || "Phone Emergency SOS").slice(0, 500);
+                    const landmark = String(packet.landmark || "Nearby Mobile Client").slice(0, 200);
+
                     const alert = broadcastSos(
-                        packet.emergencyType || "TRAPPED",
-                        packet.severity || "CRITICAL",
-                        packet.peopleCount || 1,
-                        packet.description || "Phone Emergency SOS",
-                        packet.landmark || "Nearby Mobile Client"
+                        emergencyType,
+                        severity,
+                        peopleCount,
+                        description,
+                        landmark
                     );
                     socket.send(JSON.stringify({
                         type: "PHONE_SOS_ACK",

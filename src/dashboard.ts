@@ -80,7 +80,8 @@ export function startDashboardServer(options: DashboardOptions): http.Server {
     // 2. Attach WebSocket server for dashboard operators
     wss = new WebSocketServer({
         server: httpServer,
-        path: "/dashboard-ws"
+        path: "/dashboard-ws",
+        maxPayload: 1024 * 1024
     });
 
     function broadcastToDashboard(payload: any) {
