@@ -8,6 +8,7 @@
     "client": "tsx src/client.ts",
     "mesh": "tsx src/node.ts",
     "mdns": "tsx src/discovery.ts",
+    "test": "npm run test:mesh && npm run test:dashboard && npm run test:failover && npm run test:partition && npm run test:dedupe && npm run test:ttl && npm run test:adaptive-ttl && npm run test:mobile && npm run test:stress",
     "test:mesh": "tsx src/test-mesh.ts",
     "test:dashboard": "tsx src/test-dashboard.ts",
     "test:failover": "tsx src/test-failover.ts",
