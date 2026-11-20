@@ -274,9 +274,15 @@ export class MessageStore {
                 ?, NULL, NULL, ?, ?
             )
             ON CONFLICT(sos_id) DO UPDATE SET
-                hops_from_anchor = excluded.hops_from_anchor,
-                estimated_radius_meters = excluded.estimated_radius_meters,
-                proximity_chain_json = excluded.proximity_chain_json,
+                hops_from_anchor = MIN(sos_alerts.hops_from_anchor, excluded.hops_from_anchor),
+                estimated_radius_meters = CASE
+                    WHEN excluded.hops_from_anchor < sos_alerts.hops_from_anchor THEN excluded.estimated_radius_meters
+                    ELSE sos_alerts.estimated_radius_meters
+                END,
+                proximity_chain_json = CASE
+                    WHEN excluded.hops_from_anchor < sos_alerts.hops_from_anchor THEN excluded.proximity_chain_json
+                    ELSE sos_alerts.proximity_chain_json
+                END,
                 updated_at = excluded.updated_at
         `);
 
