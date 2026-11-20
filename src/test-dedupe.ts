@@ -1,5 +1,6 @@
 import { spawn, ChildProcess, execSync } from "child_process";
 import fs from "fs";
+import path from "path";
 import { DatabaseSync } from "node:sqlite";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
@@ -15,19 +16,11 @@ console.log("===================================================================
 // Ensure clean test environment and ports
 execSync("fuser -k 7021/tcp 7022/tcp 7023/tcp 7024/tcp 2>/dev/null || true");
 
-const dbFiles = [
-    "./data/store-Node-A.db",
-    "./data/store-Node-B.db",
-    "./data/store-Node-C.db",
-    "./data/store-Node-D.db",
-    "./data/store-Node-A.db-journal",
-    "./data/store-Node-B.db-journal",
-    "./data/store-Node-C.db-journal",
-    "./data/store-Node-D.db-journal"
-];
-for (const f of dbFiles) {
-    if (fs.existsSync(f)) fs.rmSync(f, { force: true });
+const TEST_DIR = "./data/test-dedupe";
+if (fs.existsSync(TEST_DIR)) {
+    fs.rmSync(TEST_DIR, { recursive: true, force: true });
 }
+fs.mkdirSync(TEST_DIR, { recursive: true });
 
 interface NodeLogCapture {
     port: string;
@@ -44,7 +37,8 @@ function launchNode(port: string, name: string, peerUrl?: string): NodeLogCaptur
         env: {
             ...process.env,
             ENABLE_MDNS: "false",
-            HOST: "127.0.0.1"
+            HOST: "127.0.0.1",
+            STORAGE_DIR: TEST_DIR
         },
         stdio: ["pipe", "pipe", "pipe"],
         detached: true
@@ -120,7 +114,7 @@ async function runDedupeTest() {
         const dSuppressedDuplicate = nodeD.stdout.some((l) => l.includes("[DEDUPE] Suppressed duplicate packet"));
 
         // Query Node-D's SQLite database to confirm exactly ONE record exists (no duplicate DB insertion)
-        const dbPath = "./data/store-Node-D.db";
+        const dbPath = path.join(TEST_DIR, "store-Node-D.db");
         let uniqueInDb = false;
         let bulletinCount = 0;
         if (fs.existsSync(dbPath)) {

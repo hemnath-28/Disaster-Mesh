@@ -35,7 +35,8 @@ function launchNode(port: string, name: string, peerUrl?: string): NodeLogCaptur
         env: {
             ...process.env,
             ENABLE_MDNS: "false",
-            HOST: "127.0.0.1"
+            HOST: "127.0.0.1",
+            STORAGE_DIR: TEST_DIR
         },
         stdio: ["pipe", "pipe", "pipe"],
         detached: true

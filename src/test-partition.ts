@@ -1,5 +1,6 @@
 import { spawn, ChildProcess, execSync } from "child_process";
 import fs from "fs";
+import path from "path";
 import { DatabaseSync } from "node:sqlite";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
@@ -17,6 +18,12 @@ console.log("===================================================================
 // Ensure clean test environment
 execSync("fuser -k 7011/tcp 7012/tcp 7013/tcp 7014/tcp 7015/tcp 2>/dev/null || true");
 
+const TEST_DIR = "./data/test-partition";
+if (fs.existsSync(TEST_DIR)) {
+    fs.rmSync(TEST_DIR, { recursive: true, force: true });
+}
+fs.mkdirSync(TEST_DIR, { recursive: true });
+
 interface NodeLogCapture {
     port: string;
     proc: ChildProcess;
@@ -32,7 +39,8 @@ function launchNode(port: string, name: string, peerUrl?: string): NodeLogCaptur
         env: {
             ...process.env,
             ENABLE_MDNS: "false",
-            HOST: "127.0.0.1"
+            HOST: "127.0.0.1",
+            STORAGE_DIR: TEST_DIR
         },
         stdio: ["pipe", "pipe", "pipe"],
         detached: true
@@ -100,7 +108,7 @@ async function runPartitionTest() {
         console.log(`Pre-healing delivery check: Node-E received during split = ${eReceivedDuringSplit}`);
 
         // Verify SQLite store-and-forward buffered the message in store-Node-A.db
-        const dbPath = "./data/store-Node-A.db";
+        const dbPath = path.join(TEST_DIR, "store-Node-A.db");
         let sqliteBuffered = false;
         if (fs.existsSync(dbPath)) {
             const db = new DatabaseSync(dbPath);

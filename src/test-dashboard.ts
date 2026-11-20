@@ -12,9 +12,11 @@ console.log(" Web Dashboard Port: 6003 (http://127.0.0.1:6003)");
 console.log("===================================================================\n");
 
 // Clean old test databases
-if (fs.existsSync("./data")) {
-    fs.rmSync("./data", { recursive: true, force: true });
+const TEST_DIR = "./data/test-dashboard";
+if (fs.existsSync(TEST_DIR)) {
+    fs.rmSync(TEST_DIR, { recursive: true, force: true });
 }
+fs.mkdirSync(TEST_DIR, { recursive: true });
 
 function launchNode(port: string, name: string, peerUrl?: string, extraArgs: string[] = []): ChildProcess {
     const args = ["tsx", "src/node.ts", port, name];
@@ -22,7 +24,7 @@ function launchNode(port: string, name: string, peerUrl?: string, extraArgs: str
     args.push(...extraArgs);
 
     const proc = spawn("npx", args, {
-        env: { ...process.env, ENABLE_MDNS: "false" },
+        env: { ...process.env, ENABLE_MDNS: "false", STORAGE_DIR: TEST_DIR },
         stdio: ["pipe", "pipe", "pipe"]
     });
 
