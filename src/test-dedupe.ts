@@ -92,14 +92,14 @@ async function runDedupeTest() {
         console.log("\n>>> [2/4] Launching Parallel Relays Node-B (7022) & Node-C (7023) -> Node-D...");
         nodeB = launchNode("7022", "Node-B", "ws://127.0.0.1:7024");
         nodeC = launchNode("7023", "Node-C", "ws://127.0.0.1:7024");
-        await delay(1500);
+        await delay(2000);
 
         // Step 3: Launch origin Node-A connected to BOTH Node-B and Node-C
         console.log("\n>>> [3/4] Launching Origin Node-A (7021) connected to BOTH Node-B and Node-C...");
         nodeA = launchNode("7021", "Node-A", "ws://127.0.0.1:7022");
-        await delay(1500);
-        nodeA.proc.stdin?.write("connect ws://127.0.0.1:7023\n");
         await delay(2000);
+        nodeA.proc.stdin?.write("connect ws://127.0.0.1:7023\n");
+        await delay(2500);
 
         console.log("\n✅ Diamond topology established. Dual concurrent paths active:");
         console.log("   Path 1: Node-A -> Node-B -> Node-D");

@@ -437,6 +437,12 @@ export function connectToPeer(address: string): void {
         });
         socket.on("error", (err) => {
             console.log(`[CLIENT ERROR] Connection to ${url} failed: ${err.message}`);
+            setTimeout(() => {
+                const alreadyConnected = Array.from(peers.values()).some((s: any) => s._originUrl === url);
+                if (!alreadyConnected && knownPeerUrls.has(url)) {
+                    connectToPeer(url);
+                }
+            }, 2000);
         });
     } catch (e: any) {
         console.error(`[CLIENT EXCEPTION] Cannot connect to ${url}: ${e.message}`);
@@ -444,6 +450,7 @@ export function connectToPeer(address: string): void {
 }
 
 function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound", originUrl?: string): void {
+    if (originUrl) (socket as any)._originUrl = originUrl;
     const identifyMsg: IdentifyMessage = {
         type: "IDENTIFY",
         deviceId: DEVICE_ID
