@@ -143,17 +143,22 @@ export class PeerDiscovery {
                     port: discoveredPort
                 };
 
-                const isNew = !this.discoveredPeers.has(discoveredDeviceId);
+                const existing = this.discoveredPeers.get(discoveredDeviceId);
+                const isNew = !existing || existing.ip !== discoveredIP || existing.port !== discoveredPort;
                 this.discoveredPeers.set(discoveredDeviceId, peerInfo);
 
                 if (isNew) {
                     console.log(`[mDNS] Discovered new peer: ${discoveredDeviceId} at ${discoveredIP}:${discoveredPort}`);
-                    if (this.onPeerDiscovered) {
-                        this.onPeerDiscovered(peerInfo);
-                    }
+                }
+                if (this.onPeerDiscovered) {
+                    this.onPeerDiscovered(peerInfo);
                 }
             }
         });
+    }
+
+    public removePeer(deviceId: string): void {
+        this.discoveredPeers.delete(deviceId);
     }
 
     public start(intervalMs: number = 5000): void {

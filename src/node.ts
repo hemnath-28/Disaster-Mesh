@@ -34,7 +34,7 @@ const DEVICE_ID = process.env.DEVICE_ID || process.argv[3] || `Node-${randomUUID
 const MANUAL_PEER = process.env.PEER_URL || process.argv[4] || "";
 const ENABLE_MDNS = process.env.ENABLE_MDNS !== "false";
 const IS_RESCUE_BASE = process.env.IS_RESCUE_BASE === "true" || process.argv.includes("--rescue");
-const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT || (PORT + 1000).toString(), 10);
+const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT || (PORT + 1000 === 6000 ? "6003" : (PORT + 1000).toString()), 10);
 const STORAGE_DIR = process.env.STORAGE_DIR || "./data";
 
 // Decoupled internal event emitter for UI & operational telemetry
@@ -57,6 +57,7 @@ export const storage = new MessageStore(DEVICE_ID, STORAGE_DIR);
 // Active connections: deviceId -> WebSocket
 const peers = new Map<string, WebSocket>();
 const knownPeerUrls = new Set<string>();
+let discoveryService: PeerDiscovery | null = null;
 
 // Routing Table
 const routingTable = new Map<string, RouteEntry>();
@@ -513,6 +514,9 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
     const cleanup = () => {
         if (remoteDeviceId && peers.get(remoteDeviceId) === socket) {
             peers.delete(remoteDeviceId);
+            if (discoveryService) {
+                discoveryService.removePeer(remoteDeviceId);
+            }
             console.log(`[PEER] Disconnected: ${remoteDeviceId} | Active peers: ${peers.size}`);
             meshEvents.emit("peer:change", getActivePeers());
             meshEvents.emit("routes:change", getRoutingTable());
@@ -1123,7 +1127,6 @@ setInterval(() => {
 }, 3000);
 
 // mDNS Discovery
-let discoveryService: PeerDiscovery | null = null;
 if (ENABLE_MDNS) {
     discoveryService = new PeerDiscovery({
         deviceId: DEVICE_ID,
