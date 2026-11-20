@@ -22,6 +22,7 @@ export interface DashboardOptions {
 let httpServer: http.Server | null = null;
 let wss: WebSocketServer | null = null;
 let dashboardClients = new Set<WebSocket>();
+let cleanupMeshListeners: (() => void) | null = null;
 
 export function startDashboardServer(options: DashboardOptions): http.Server {
     if (httpServer) {
@@ -155,25 +156,26 @@ export function startDashboardServer(options: DashboardOptions): http.Server {
     });
 
     // 3. Hook into internal mesh event bus
-    options.meshEvents.on("sos:upsert", (alert) => {
-        broadcastToDashboard({ type: "SOS_UPSERT", alert });
-    });
+    const onSosUpsert = (alert: any) => broadcastToDashboard({ type: "SOS_UPSERT", alert });
+    const onPeerChange = (peers: any) => broadcastToDashboard({ type: "PEERS_CHANGE", peers });
+    const onRoutesChange = (routes: any) => broadcastToDashboard({ type: "ROUTES_CHANGE", routes });
+    const onBulletinNew = (bulletin: any) => broadcastToDashboard({ type: "BULLETIN_NEW", bulletin });
+    const onStatsTick = (stats: any) => broadcastToDashboard({ type: "STATS_TICK", stats });
 
-    options.meshEvents.on("peer:change", (peers) => {
-        broadcastToDashboard({ type: "PEERS_CHANGE", peers });
-    });
+    options.meshEvents.on("sos:upsert", onSosUpsert);
+    options.meshEvents.on("peer:change", onPeerChange);
+    options.meshEvents.on("routes:change", onRoutesChange);
+    options.meshEvents.on("bulletin:new", onBulletinNew);
+    options.meshEvents.on("stats:tick", onStatsTick);
 
-    options.meshEvents.on("routes:change", (routes) => {
-        broadcastToDashboard({ type: "ROUTES_CHANGE", routes });
-    });
-
-    options.meshEvents.on("bulletin:new", (bulletin) => {
-        broadcastToDashboard({ type: "BULLETIN_NEW", bulletin });
-    });
-
-    options.meshEvents.on("stats:tick", (stats) => {
-        broadcastToDashboard({ type: "STATS_TICK", stats });
-    });
+    cleanupMeshListeners = () => {
+        options.meshEvents.off("sos:upsert", onSosUpsert);
+        options.meshEvents.off("peer:change", onPeerChange);
+        options.meshEvents.off("routes:change", onRoutesChange);
+        options.meshEvents.off("bulletin:new", onBulletinNew);
+        options.meshEvents.off("stats:tick", onStatsTick);
+        cleanupMeshListeners = null;
+    };
 
     httpServer.listen(options.port, options.host, () => {
         console.log(`[DASHBOARD] Operations Console listening at http://${options.host === "0.0.0.0" ? "localhost" : options.host}:${options.port}`);
@@ -183,6 +185,9 @@ export function startDashboardServer(options: DashboardOptions): http.Server {
 }
 
 export function stopDashboardServer(): void {
+    if (cleanupMeshListeners) {
+        cleanupMeshListeners();
+    }
     for (const client of dashboardClients) {
         try {
             client.close();
