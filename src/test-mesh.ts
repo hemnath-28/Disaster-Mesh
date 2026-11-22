@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
+import path from "path";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
@@ -93,7 +94,8 @@ async function runTest() {
     let activeSosId = "";
     try {
         const { DatabaseSync } = await import("node:sqlite");
-        const db = new DatabaseSync("./data/store-Node-RescueBase.db");
+        const dbPath = path.join(TEST_DIR, "store-Node-RescueBase.db");
+        const db = new DatabaseSync(dbPath);
         const row = db.prepare("SELECT sos_id FROM sos_alerts LIMIT 1").get() as any;
         activeSosId = row?.sos_id;
         db.close();
