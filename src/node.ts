@@ -377,7 +377,7 @@ server.on("connection", (socket: WebSocket, req: http.IncomingMessage) => {
                                 sosId: alert.sosId,
                                 status: alert.status,
                                 rescuerDeviceId: alert.rescuerDeviceId || "Rescue Unit",
-                                instructions: alert.responderNotes || "Help dispatched/resolved.",
+                                instructions: alert.rescuerInstructions || "Help dispatched/resolved.",
                                 estimatedArrivalTime: "Arrived or En Route"
                             }));
                         } else {
