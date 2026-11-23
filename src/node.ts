@@ -57,6 +57,8 @@ export const storage = new MessageStore(DEVICE_ID, STORAGE_DIR);
 // Active connections: deviceId -> WebSocket
 const peers = new Map<string, WebSocket>();
 const knownPeerUrls = new Set<string>();
+const connectionAttempts = new Map<string, number>();
+const connectingUrls = new Set<string>();
 let discoveryService: PeerDiscovery | null = null;
 
 // Routing Table
@@ -436,24 +438,43 @@ export function connectToPeer(address: string): void {
         return;
     }
 
+    const alreadyConnected = Array.from(peers.values()).some((s: any) => s._originUrl === url);
+    if (alreadyConnected || connectingUrls.has(url)) {
+        return;
+    }
+
+    connectingUrls.add(url);
     knownPeerUrls.add(url);
 
     try {
         const socket = new WebSocket(url);
         socket.on("open", () => {
+            connectingUrls.delete(url);
+            connectionAttempts.delete(url);
             console.log(`[CLIENT] Connected to peer at ${url}`);
             setupSocketHandlers(socket, "outbound", url);
         });
         socket.on("error", (err) => {
+            connectingUrls.delete(url);
             console.log(`[CLIENT ERROR] Connection to ${url} failed: ${err.message}`);
-            setTimeout(() => {
-                const alreadyConnected = Array.from(peers.values()).some((s: any) => s._originUrl === url);
-                if (!alreadyConnected && knownPeerUrls.has(url)) {
-                    connectToPeer(url);
-                }
-            }, 2000);
+            const attempts = (connectionAttempts.get(url) || 0) + 1;
+            connectionAttempts.set(url, attempts);
+
+            if (attempts < 3) {
+                setTimeout(() => {
+                    const isConnected = Array.from(peers.values()).some((s: any) => s._originUrl === url);
+                    if (!isConnected && knownPeerUrls.has(url)) {
+                        connectToPeer(url);
+                    }
+                }, 2000);
+            } else {
+                console.log(`[PEER OFFLINE] ${url} unreachable after 3 attempts. Stopping retries until rediscovered.`);
+                connectionAttempts.delete(url);
+                knownPeerUrls.delete(url);
+            }
         });
     } catch (e: any) {
+        connectingUrls.delete(url);
         console.error(`[CLIENT EXCEPTION] Cannot connect to ${url}: ${e.message}`);
     }
 }
