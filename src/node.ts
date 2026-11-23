@@ -413,6 +413,15 @@ server.on("error", (error) => {
     console.error("[SERVER ERROR]", error.message);
 });
 
+httpServer.on("error", (err: any) => {
+    if (err.code === "EADDRINUSE") {
+        console.error(`\n❌ [PORT CONFLICT] Port ${PORT} is already in use by another program.`);
+        console.error(`👉 Notification: Please shut down the conflicting process, or choose a different port by running: PORT=${PORT + 1} npm start\n`);
+    } else {
+        console.error(`\n❌ [HTTP SERVER ERROR] ${err.message}\n`);
+    }
+});
+
 httpServer.listen(PORT, HOST, () => {
     console.log(`[SERVER] Listening on ${HOST}:${PORT} (HTTP Captive Portal & WebSockets)`);
 });
@@ -1027,6 +1036,7 @@ function dispatchDirectedMessage(message: Message): void {
             console.log(`[ROUTE-AWARE] Route resolved for ${message.receiverDeviceId} (distance: ${route.hopDistance}) -> Adaptive TTL dynamically set to ${message.ttl}`);
         }
         stats.directedForwarded++;
+        storage.saveMessage(message, "IN_TRANSIT");
         const sent = sendDirected(route.nextHop, message);
         if (sent) {
             registerPendingAck(message);
@@ -1066,6 +1076,7 @@ function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
         stats.deliveredMessages++;
         console.log(`\n📬 [DELIVERED] From: ${message.senderDeviceId} | "${message.payload}"\n`);
         if (message.receiverDeviceId === DEVICE_ID) {
+            storage.saveMessage(message, "DELIVERED");
             sendAck(message.senderDeviceId, message.messageId);
             return;
         }

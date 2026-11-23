@@ -178,6 +178,15 @@ export function startDashboardServer(options: DashboardOptions): http.Server {
         cleanupMeshListeners = null;
     };
 
+    httpServer.on("error", (err: any) => {
+        if (err.code === "EADDRINUSE") {
+            console.error(`\n❌ [DASHBOARD PORT CONFLICT] Dashboard port ${options.port} is already in use by another program.`);
+            console.error(`👉 Notification: Please free port ${options.port} or set a custom port with: DASHBOARD_PORT=<port> npm start\n`);
+        } else {
+            console.error(`\n❌ [DASHBOARD SERVER ERROR] ${err.message}\n`);
+        }
+    });
+
     httpServer.listen(options.port, options.host, () => {
         console.log(`[DASHBOARD] Operations Console listening at http://${options.host === "0.0.0.0" ? "localhost" : options.host}:${options.port}`);
     });
