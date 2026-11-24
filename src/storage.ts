@@ -130,6 +130,7 @@ export class MessageStore {
         const now = Date.now();
         const expiresAt = now + retentionHours * 60 * 60 * 1000;
         const routePathJson = JSON.stringify(message.routePath ?? []);
+        const lastAttemptAt = status === "IN_TRANSIT" ? now : null;
 
         const stmt = this.db.prepare(`
             INSERT INTO messages (
@@ -139,11 +140,12 @@ export class MessageStore {
             ) VALUES (
                 ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
-                ?, ?, 0, NULL, NULL
+                ?, ?, 0, ?, NULL
             )
             ON CONFLICT(message_id) DO UPDATE SET
-                status = excluded.status,
-                retry_count = messages.retry_count + 1
+                status = CASE WHEN messages.status = 'DELIVERED' THEN 'DELIVERED' ELSE excluded.status END,
+                retry_count = messages.retry_count + 1,
+                last_attempt_at = COALESCE(excluded.last_attempt_at, messages.last_attempt_at)
         `);
 
         stmt.run(
@@ -157,7 +159,8 @@ export class MessageStore {
             routePathJson,
             status,
             now,
-            expiresAt
+            expiresAt,
+            lastAttemptAt
         );
     }
 
@@ -182,17 +185,28 @@ export class MessageStore {
         stmt.run(Date.now(), messageId);
     }
 
-    public getPendingMessagesFor(receiverDeviceId: string): Message[] {
+    public getMessageStatus(messageId: string): MessageStatus | undefined {
+        const stmt = this.db.prepare(`SELECT status FROM messages WHERE message_id = ?`);
+        const row = stmt.get(messageId) as any;
+        return row ? (row.status as MessageStatus) : undefined;
+    }
+
+    public getPendingMessagesFor(receiverDeviceId: string, retryAfterMs: number = 6000): Message[] {
         const now = Date.now();
+        const retryCutoff = now - retryAfterMs;
         const stmt = this.db.prepare(`
             SELECT * FROM messages
             WHERE receiver_device_id = ?
-              AND status IN ('PENDING', 'IN_TRANSIT')
+              AND (
+                status = 'PENDING'
+                OR (status = 'IN_TRANSIT' AND (last_attempt_at IS NULL OR last_attempt_at <= ?))
+              )
+              AND retry_count <= 3
               AND expires_at > ?
             ORDER BY created_at ASC
         `);
 
-        const rows = stmt.all(receiverDeviceId, now) as any[];
+        const rows = stmt.all(receiverDeviceId, retryCutoff, now) as any[];
         return rows.map((row) => ({
             type: "MESSAGE" as const,
             messageId: row.message_id,
@@ -202,20 +216,26 @@ export class MessageStore {
             timestamp: row.timestamp,
             ttl: row.ttl,
             hopCount: row.hop_count,
-            routePath: JSON.parse(row.route_path_json)
+            routePath: JSON.parse(row.route_path_json),
+            attempt: (row.retry_count ?? 0) + 1
         }));
     }
 
-    public getAllPendingReceivers(): string[] {
+    public getAllPendingReceivers(retryAfterMs: number = 6000): string[] {
         const now = Date.now();
+        const retryCutoff = now - retryAfterMs;
         const stmt = this.db.prepare(`
             SELECT DISTINCT receiver_device_id
             FROM messages
-            WHERE status IN ('PENDING', 'IN_TRANSIT')
+            WHERE (
+                status = 'PENDING'
+                OR (status = 'IN_TRANSIT' AND (last_attempt_at IS NULL OR last_attempt_at <= ?))
+              )
+              AND retry_count <= 3
               AND expires_at > ?
         `);
 
-        const rows = stmt.all(now) as any[];
+        const rows = stmt.all(retryCutoff, now) as any[];
         return rows.map((r) => r.receiver_device_id);
     }
 

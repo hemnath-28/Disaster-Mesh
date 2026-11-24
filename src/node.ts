@@ -79,8 +79,10 @@ export function getRoutingTable(): RouteEntry[] {
     return Array.from(routingTable.values());
 }
 
-// Active route discovery tracking
-const pendingRouteRequests = new Set<string>();
+// Active route discovery tracking with exponential backoff
+const rreqStates = new Map<string, { attempts: number; nextRetryAt: number }>();
+const MAX_RREQ_ATTEMPTS = 3;
+let localSeqNum = 0;
 
 // Pending ACKs
 interface PendingAck {
@@ -138,18 +140,57 @@ function isDuplicate(packetKey: string): boolean {
     return false;
 }
 
-function updateRoute(destination: string, nextHop: string, hopDistance: number): void {
+function updateRoute(destination: string, nextHop: string, hopDistance: number, destSeqNum?: number): void {
     const existing = routingTable.get(destination);
-    if (!existing || hopDistance < existing.hopDistance || Date.now() > existing.expiresAt) {
+    const now = Date.now();
+    const isExpired = existing ? now > existing.expiresAt : false;
+    const isFresherSeq =
+        destSeqNum !== undefined &&
+        existing !== undefined &&
+        (existing.destSeqNum === undefined || destSeqNum > existing.destSeqNum);
+    const isSameOrNoSeq =
+        destSeqNum === undefined || existing?.destSeqNum === undefined || destSeqNum === existing.destSeqNum;
+    const isShorter = existing ? hopDistance < existing.hopDistance : false;
+
+    if (!existing || isExpired || isFresherSeq || (isSameOrNoSeq && isShorter)) {
         routingTable.set(destination, {
             destination,
             nextHop,
             hopDistance,
-            expiresAt: Date.now() + ROUTE_TTL_MS
+            expiresAt: now + ROUTE_TTL_MS,
+            destSeqNum: destSeqNum ?? existing?.destSeqNum
         });
+        rreqStates.delete(destination);
         checkAndFlushPending(destination);
         meshEvents.emit("routes:change", getRoutingTable());
+    } else if (existing && nextHop === existing.nextHop && hopDistance === existing.hopDistance) {
+        existing.expiresAt = now + ROUTE_TTL_MS;
     }
+}
+
+function requestRoute(destinationDeviceId: string): void {
+    const now = Date.now();
+    const state = rreqStates.get(destinationDeviceId) ?? { attempts: 0, nextRetryAt: 0 };
+    if (state.attempts >= MAX_RREQ_ATTEMPTS || now < state.nextRetryAt) {
+        return;
+    }
+    const attempts = state.attempts + 1;
+    const backoffMs = 3000 * Math.pow(2, attempts - 1);
+    rreqStates.set(destinationDeviceId, { attempts, nextRetryAt: now + backoffMs });
+
+    localSeqNum++;
+    const knownDestSeq = routingTable.get(destinationDeviceId)?.destSeqNum ?? 0;
+    broadcastPacket({
+        type: "RREQ",
+        requestId: randomUUID(),
+        originDeviceId: DEVICE_ID,
+        targetDeviceId: destinationDeviceId,
+        hopCount: 0,
+        ttl: DEFAULT_SEARCH_TTL,
+        routePath: [DEVICE_ID],
+        originSeqNum: localSeqNum,
+        destSeqNum: knownDestSeq
+    });
 }
 
 function getValidRoute(destination: string): RouteEntry | undefined {
@@ -190,19 +231,7 @@ export function checkAndFlushPending(destinationDeviceId: string): void {
 
     const route = getValidRoute(destinationDeviceId);
     if (!route) {
-        if (!pendingRouteRequests.has(destinationDeviceId)) {
-            pendingRouteRequests.add(destinationDeviceId);
-            setTimeout(() => pendingRouteRequests.delete(destinationDeviceId), 3000);
-            broadcastPacket({
-                type: "RREQ",
-                requestId: randomUUID(),
-                originDeviceId: DEVICE_ID,
-                targetDeviceId: destinationDeviceId,
-                hopCount: 0,
-                ttl: DEFAULT_SEARCH_TTL,
-                routePath: [DEVICE_ID]
-            });
-        }
+        requestRoute(destinationDeviceId);
         return;
     }
 
@@ -439,7 +468,12 @@ export function connectToPeer(address: string): void {
     }
 
     const alreadyConnected = Array.from(peers.values()).some((s: any) => s._originUrl === url);
-    if (alreadyConnected || connectingUrls.has(url)) {
+    const discoveredMatch = discoveryService
+        ? Array.from(discoveryService.getDiscoveredPeers().values()).some(
+              (p) => `ws://${p.ip}:${p.port}` === url && peers.has(p.deviceId)
+          )
+        : false;
+    if (alreadyConnected || discoveredMatch || connectingUrls.has(url)) {
         return;
     }
 
@@ -511,6 +545,7 @@ function setupSocketHandlers(socket: WebSocket, direction: "inbound" | "outbound
                 console.log(`[PEER] Identified: ${remoteDeviceId} (${direction}) | Active peers: ${peers.size}`);
                 checkAndFlushPending(remoteDeviceId);
                 for (const pendingDest of storage.getAllPendingReceivers()) {
+                    rreqStates.delete(pendingDest);
                     checkAndFlushPending(pendingDest);
                 }
                 syncCrisisStateToPeer(socket, remoteDeviceId);
@@ -942,13 +977,16 @@ function handleRouteError(rerr: RouteError, sourceSocket: WebSocket): void {
         }
     }
 
-    if (invalidated && rerr.ttl > 1) {
-        broadcastPacket({
-            ...rerr,
-            ttl: rerr.ttl - 1,
-            hopCount: rerr.hopCount + 1,
-            routePath: [...rerr.routePath, DEVICE_ID]
-        }, sourceSocket);
+    if (invalidated) {
+        meshEvents.emit("routes:change", getRoutingTable());
+        if (rerr.ttl > 1) {
+            broadcastPacket({
+                ...rerr,
+                ttl: rerr.ttl - 1,
+                hopCount: rerr.hopCount + 1,
+                routePath: [...rerr.routePath, DEVICE_ID]
+            }, sourceSocket);
+        }
     }
 }
 
@@ -956,9 +994,10 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
     if (isDuplicate(`RREQ-${rreq.requestId}`) || rreq.routePath.includes(DEVICE_ID)) return;
 
     const previousHop = rreq.routePath[rreq.routePath.length - 1];
-    updateRoute(rreq.originDeviceId, previousHop, rreq.hopCount + 1);
+    updateRoute(rreq.originDeviceId, previousHop, rreq.hopCount + 1, rreq.originSeqNum);
 
     if (rreq.targetDeviceId === DEVICE_ID) {
+        localSeqNum = Math.max(localSeqNum, rreq.destSeqNum ?? 0) + 1;
         const rrep: RouteReply = {
             type: "RREP",
             requestId: rreq.requestId,
@@ -966,7 +1005,8 @@ function handleRouteRequest(rreq: RouteRequest, sourceSocket: WebSocket): void {
             targetDeviceId: DEVICE_ID,
             hopCount: 0,
             ttl: getAdaptiveTtl(rreq.originDeviceId, DEFAULT_SEARCH_TTL),
-            routePath: [DEVICE_ID]
+            routePath: [DEVICE_ID],
+            destSeqNum: localSeqNum
         };
         isDuplicate(`RREP-${rrep.requestId}-${rrep.targetDeviceId}`);
         const reverseRoute = getValidRoute(rreq.originDeviceId);
@@ -991,10 +1031,10 @@ function handleRouteReply(rrep: RouteReply, sourceSocket: WebSocket): void {
     if (isDuplicate(`RREP-${rrep.requestId}-${rrep.targetDeviceId}`) || rrep.routePath.includes(DEVICE_ID)) return;
 
     const previousHop = rrep.routePath[rrep.routePath.length - 1];
-    updateRoute(rrep.targetDeviceId, previousHop, rrep.hopCount + 1);
+    updateRoute(rrep.targetDeviceId, previousHop, rrep.hopCount + 1, rrep.destSeqNum);
 
     if (rrep.originDeviceId === DEVICE_ID) {
-        pendingRouteRequests.delete(rrep.targetDeviceId);
+        rreqStates.delete(rrep.targetDeviceId);
         checkAndFlushPending(rrep.targetDeviceId);
         return;
     }
@@ -1021,10 +1061,11 @@ function registerPendingAck(message: Message): void {
     }
     const timer = setTimeout(() => {
         pendingAcks.delete(message.messageId);
-        const record = storage.getAllStoredRecords().find(r => r.messageId === message.messageId);
-        if (record && record.status !== "DELIVERED" && record.retryCount <= 3) {
+        const status = storage.getMessageStatus(message.messageId);
+        const nextAttempt = (message.attempt ?? 1) + 1;
+        if (status && status !== "DELIVERED" && nextAttempt <= 4) {
             console.log(`[ACK TIMEOUT] Message ${message.messageId} to ${message.receiverDeviceId} unacknowledged. Retrying...`);
-            dispatchDirectedMessage(message);
+            dispatchDirectedMessage({ ...message, attempt: nextAttempt });
         }
     }, ACK_TIMEOUT_MS);
     pendingAcks.set(message.messageId, { message, sentAt: Date.now(), timer });
@@ -1042,9 +1083,10 @@ export function sendDirectedMessage(targetDeviceId: string, text: string, custom
         timestamp: Date.now(),
         ttl: calculatedTtl,
         hopCount: 0,
-        routePath: [DEVICE_ID]
+        routePath: [DEVICE_ID],
+        attempt: 1
     };
-    isDuplicate(msg.messageId);
+    isDuplicate(`${msg.messageId}:1`);
     console.log(`[DISPATCH] Sending message to ${targetDeviceId} (Adaptive TTL: ${calculatedTtl}): "${text}"`);
     dispatchDirectedMessage(msg);
 }
@@ -1067,40 +1109,36 @@ function dispatchDirectedMessage(message: Message): void {
 
     storage.saveMessage(message, "PENDING");
     console.log(`[STORAGE] No route to ${message.receiverDeviceId}. Message ${message.messageId} buffered to SQLite (PENDING)`);
-
-    if (!pendingRouteRequests.has(message.receiverDeviceId)) {
-        pendingRouteRequests.add(message.receiverDeviceId);
-        setTimeout(() => pendingRouteRequests.delete(message.receiverDeviceId), 3000);
-        broadcastPacket({
-            type: "RREQ",
-            requestId: randomUUID(),
-            originDeviceId: DEVICE_ID,
-            targetDeviceId: message.receiverDeviceId,
-            hopCount: 0,
-            ttl: DEFAULT_SEARCH_TTL,
-            routePath: [DEVICE_ID]
-        });
-    }
+    requestRoute(message.receiverDeviceId);
 }
 
 function handleMeshMessage(message: Message, sourceSocket: WebSocket): void {
-    if (isDuplicate(message.messageId)) return;
     if ((message.routePath ?? []).includes(DEVICE_ID)) {
         stats.droppedLoops++;
         console.log(`[LOOP] Suppressed packet loop: ${message.messageId} already passed through ${DEVICE_ID}`);
         return;
     }
 
+    const dedupeKey = message.attempt ? `${message.messageId}:${message.attempt}` : message.messageId;
+
+    if (message.receiverDeviceId === DEVICE_ID) {
+        const alreadyDelivered = storage.getMessageStatus(message.messageId) === "DELIVERED";
+        if (!alreadyDelivered && !isDuplicate(dedupeKey)) {
+            stats.deliveredMessages++;
+            console.log(`\n📬 [DELIVERED] From: ${message.senderDeviceId} | "${message.payload}"\n`);
+            storage.saveMessage(message, "DELIVERED");
+        }
+        sendAck(message.senderDeviceId, message.messageId);
+        return;
+    }
+
+    if (isDuplicate(dedupeKey)) return;
+
     const currentPath = message.routePath ? [...message.routePath] : [];
 
-    if (message.receiverDeviceId === DEVICE_ID || message.receiverDeviceId === "*") {
+    if (message.receiverDeviceId === "*") {
         stats.deliveredMessages++;
         console.log(`\n📬 [DELIVERED] From: ${message.senderDeviceId} | "${message.payload}"\n`);
-        if (message.receiverDeviceId === DEVICE_ID) {
-            storage.saveMessage(message, "DELIVERED");
-            sendAck(message.senderDeviceId, message.messageId);
-            return;
-        }
     }
 
     if (message.ttl <= 1) {
@@ -1142,14 +1180,14 @@ function sendAck(targetDeviceId: string, ackMessageId: string): void {
         hopCount: 0,
         routePath: [DEVICE_ID]
     };
-    isDuplicate(`ACK-${ack.ackMessageId}-${ack.senderDeviceId}`);
+    isDuplicate(`ACK-${ack.ackMessageId}-${ack.senderDeviceId}-${ack.timestamp}`);
     const route = getValidRoute(targetDeviceId);
     if (route) sendDirected(route.nextHop, ack);
     else broadcastPacket(ack);
 }
 
 function handleAckMessage(ack: AckMessage, sourceSocket: WebSocket): void {
-    if (isDuplicate(`ACK-${ack.ackMessageId}-${ack.senderDeviceId}`) || (ack.routePath ?? []).includes(DEVICE_ID)) return;
+    if (isDuplicate(`ACK-${ack.ackMessageId}-${ack.senderDeviceId}-${ack.timestamp}`) || (ack.routePath ?? []).includes(DEVICE_ID)) return;
 
     if (ack.receiverDeviceId === DEVICE_ID) {
         storage.markDelivered(ack.ackMessageId);

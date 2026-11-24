@@ -11,6 +11,7 @@ export interface Message {
     ttl: number;
     hopCount: number;
     routePath?: string[];
+    attempt?: number;
 }
 
 export interface AckMessage {
@@ -22,6 +23,7 @@ export interface AckMessage {
     ttl: number;
     hopCount: number;
     routePath?: string[];
+    attempt?: number;
 }
 
 export interface RouteRequest {
@@ -32,6 +34,8 @@ export interface RouteRequest {
     hopCount: number;
     ttl: number;
     routePath: string[];
+    originSeqNum?: number;
+    destSeqNum?: number;
 }
 
 export interface RouteReply {
@@ -42,6 +46,7 @@ export interface RouteReply {
     hopCount: number;
     ttl: number;
     routePath: string[];
+    destSeqNum?: number;
 }
 
 export interface RouteError {
@@ -148,6 +153,7 @@ export interface RouteEntry {
     nextHop: string;
     hopDistance: number;
     expiresAt: number;
+    destSeqNum?: number;
 }
 
 export interface DiscoveredPeer {
