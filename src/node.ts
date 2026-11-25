@@ -1288,6 +1288,9 @@ if (IS_RESCUE_BASE) {
         getStats,
         meshEvents
     });
+    setInterval(() => {
+        meshEvents.emit("stats:tick", getStats());
+    }, 2000).unref();
 }
 
 // ==================== Crisis Command Terminal CLI ====================
