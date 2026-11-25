@@ -1,8 +1,8 @@
 import assert from "assert";
 import fs from "fs";
 import { spawn, ChildProcess, execSync } from "child_process";
-import { MessageStore } from "./storage.js";
-import { Message } from "./types.js";
+import { MessageStore, safeParseStringArray } from "./storage.js";
+import { Message, SosAlert } from "./types.js";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 const TEST_DIR = "./data/test-routing-fixes";
@@ -40,8 +40,44 @@ function testStorageFixes(): void {
     store.saveMessage(msg, "PENDING");
     assert.strictEqual(store.getMessageStatus("msg-1"), "DELIVERED", "DELIVERED must not revert to PENDING");
 
+    // 4. saveSosAlert updates severity/peopleCount/description on conflict while preserving DISPATCHED status
+    const sos: SosAlert = {
+        type: "SOS",
+        sosId: "sos-1",
+        senderDeviceId: "Node-A",
+        emergencyType: "TRAPPED",
+        severity: "MODERATE",
+        peopleCount: 1,
+        description: "Initial report",
+        location: { landmark: "Roof", anchorDeviceId: "Node-A", hopsFromAnchor: 0, estimatedRadiusMeters: 50, proximityChain: ["Node-A"] },
+        status: "OPEN",
+        timestamp: Date.now(),
+        ttl: 10,
+        hopCount: 0,
+        routePath: ["Node-A"]
+    };
+    store.saveSosAlert(sos);
+    store.saveSosAlert({ ...sos, severity: "CRITICAL", peopleCount: 4, description: "Water rising" });
+    const updatedSos = store.getSosAlert("sos-1");
+    assert.strictEqual(updatedSos?.severity, "CRITICAL");
+    assert.strictEqual(updatedSos?.peopleCount, 4);
+    assert.strictEqual(updatedSos?.description, "Water rising");
+
+    store.updateSosStatus("sos-1", "DISPATCHED", "Rescue-1", "En route");
+    store.saveSosAlert({ ...sos, status: "OPEN", severity: "CRITICAL", peopleCount: 4, description: "Water rising" });
+    assert.strictEqual(store.getSosAlert("sos-1")?.status, "DISPATCHED", "DISPATCHED must not revert to OPEN");
+
+    // 5. safeParseStringArray handles malformed JSON without throwing
+    assert.deepStrictEqual(safeParseStringArray("{bad json"), []);
+    assert.deepStrictEqual(safeParseStringArray(null), []);
+
+    // 6. purgeExpired marks expired messages EXPIRED
+    store.saveMessage({ ...msg, messageId: "msg-expired" }, "PENDING", -1);
+    assert.strictEqual(store.purgeExpired(), 1);
+    assert.strictEqual(store.getMessageStatus("msg-expired"), "EXPIRED");
+
     store.close();
-    console.log("✅ Storage retry-window & status-preservation checks passed.");
+    console.log("✅ Storage retry-window, SOS upsert, safe JSON parse & purgeExpired checks passed.");
 }
 
 async function testRreqBackoffAndCap(): Promise<void> {

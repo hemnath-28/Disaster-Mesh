@@ -5,6 +5,16 @@ import { Message, SosAlert, DisasterBulletin, EmergencyStatus } from "./types.js
 
 export type MessageStatus = "PENDING" | "IN_TRANSIT" | "DELIVERED" | "EXPIRED";
 
+export function safeParseStringArray(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
 export interface StoredMessageRecord {
     messageId: string;
     senderDeviceId: string;
@@ -216,7 +226,7 @@ export class MessageStore {
             timestamp: row.timestamp,
             ttl: row.ttl,
             hopCount: row.hop_count,
-            routePath: JSON.parse(row.route_path_json),
+            routePath: safeParseStringArray(row.route_path_json),
             attempt: (row.retry_count ?? 0) + 1
         }));
     }
@@ -294,6 +304,12 @@ export class MessageStore {
                 ?, NULL, NULL, ?, ?
             )
             ON CONFLICT(sos_id) DO UPDATE SET
+                emergency_type = excluded.emergency_type,
+                severity = excluded.severity,
+                people_count = excluded.people_count,
+                description = excluded.description,
+                landmark = excluded.landmark,
+                status = CASE WHEN sos_alerts.status = 'OPEN' THEN excluded.status ELSE sos_alerts.status END,
                 hops_from_anchor = MIN(sos_alerts.hops_from_anchor, excluded.hops_from_anchor),
                 estimated_radius_meters = CASE
                     WHEN excluded.hops_from_anchor < sos_alerts.hops_from_anchor THEN excluded.estimated_radius_meters

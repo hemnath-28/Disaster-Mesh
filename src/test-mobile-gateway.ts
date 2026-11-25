@@ -102,15 +102,15 @@ async function runTest() {
 
         const appleProbe = await httpGet("http://127.0.0.1:7051/hotspot-detect.html");
         console.log(`* Apple Probe (/hotspot-detect):   ${appleProbe.statusCode} -> Location: ${appleProbe.headers.location}`);
-        const appleRedirectOk = appleProbe.statusCode === 302 && appleProbe.headers.location === "/mobile";
+        const appleRedirectOk = appleProbe.statusCode === 302 && Boolean(appleProbe.headers.location?.endsWith("/mobile"));
 
         const androidProbe = await httpGet("http://127.0.0.1:7051/generate_204");
         console.log(`* Android Probe (/generate_204):   ${androidProbe.statusCode} -> Location: ${androidProbe.headers.location}`);
-        const androidRedirectOk = androidProbe.statusCode === 302 && androidProbe.headers.location === "/mobile";
+        const androidRedirectOk = androidProbe.statusCode === 302 && Boolean(androidProbe.headers.location?.endsWith("/mobile"));
 
         const windowsProbe = await httpGet("http://127.0.0.1:7051/connecttest.txt");
         console.log(`* Windows Probe (/connecttest):    ${windowsProbe.statusCode} -> Location: ${windowsProbe.headers.location}`);
-        const windowsRedirectOk = windowsProbe.statusCode === 302 && windowsProbe.headers.location === "/mobile";
+        const windowsRedirectOk = windowsProbe.statusCode === 302 && Boolean(windowsProbe.headers.location?.endsWith("/mobile"));
 
         if (!servesMobileHtml || !appleRedirectOk || !androidRedirectOk || !windowsRedirectOk) {
             throw new Error("HTTP Captive Portal probe verification failed.");

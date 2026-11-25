@@ -23,8 +23,8 @@ import {
     EmergencySeverity,
     HazardType
 } from "./types.js";
-import { PeerDiscovery } from "./discovery.js";
-import { MessageStore } from "./storage.js";
+import { PeerDiscovery, getLocalIP } from "./discovery.js";
+import { MessageStore, safeParseStringArray } from "./storage.js";
 import { startDashboardServer, stopDashboardServer } from "./dashboard.js";
 
 // Configuration via environment or arguments
@@ -255,7 +255,7 @@ export function syncCrisisStateToPeer(socket: WebSocket, targetDeviceId?: string
     // 1. Sync active open SOS distress beacons from SQLite
     const openAlerts = storage.getAllSosAlerts().filter((a) => a.status === "OPEN");
     for (const alert of openAlerts) {
-        const chain: string[] = JSON.parse(alert.proximityChainJson || "[]");
+        const chain = safeParseStringArray(alert.proximityChainJson);
         if (targetDeviceId && chain.includes(targetDeviceId)) continue;
 
         const sosPacket: SosAlert = {
@@ -335,10 +335,11 @@ const httpServer = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
     const pathname = parsedUrl.pathname;
 
-    // Captive probe detection -> 302 Redirect to /mobile
+    // Captive probe detection -> 302 Redirect to absolute gateway /mobile URL
     if (captivePaths.has(pathname)) {
+        const redirectHost = HOST === "0.0.0.0" ? getLocalIP() : HOST;
         res.writeHead(302, {
-            Location: "/mobile",
+            Location: `http://${redirectHost}:${PORT}/mobile`,
             "Cache-Control": "no-cache"
         });
         res.end();
@@ -402,14 +403,14 @@ server.on("connection", (socket: WebSocket, req: http.IncomingMessage) => {
                 } else if (packet.type === "SYNC_REQUEST" && packet.sosId) {
                     const alert = storage.getSosAlert(packet.sosId);
                     if (alert) {
-                        if (alert.status === "RESOLVED") {
+                        if (alert.status === "DISPATCHED" || alert.status === "STANDBY" || alert.status === "RESOLVED") {
                             socket.send(JSON.stringify({
                                 type: "RESCUER_RESPONSE",
                                 sosId: alert.sosId,
                                 status: alert.status,
                                 rescuerDeviceId: alert.rescuerDeviceId || "Rescue Unit",
                                 instructions: alert.rescuerInstructions || "Help dispatched/resolved.",
-                                estimatedArrivalTime: "Arrived or En Route"
+                                estimatedArrivalTime: alert.status === "RESOLVED" ? "Arrived or Resolved" : "En Route"
                             }));
                         } else {
                             socket.send(JSON.stringify({
@@ -1239,6 +1240,12 @@ setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send(payload);
     }
 }, 15000);
+
+// Phase 5 Store-and-Forward: Purge expired messages on startup and hourly
+storage.purgeExpired();
+setInterval(() => {
+    storage.purgeExpired();
+}, 60 * 60 * 1000).unref();
 
 // Phase 5 Store-and-Forward: Periodic retry worker for partitioned messages
 setInterval(() => {
