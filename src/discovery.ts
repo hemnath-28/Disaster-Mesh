@@ -114,7 +114,8 @@ export class PeerDiscovery {
                 return;
             }
 
-            for (const answer of response.additionals ?? []) {
+            const records = [...(response.answers ?? []), ...(response.additionals ?? [])];
+            for (const answer of records) {
                 if (answer.type === "SRV" && answer.name === discoveredHostname) {
                     discoveredPort = answer.data.port;
                 }
@@ -149,9 +150,9 @@ export class PeerDiscovery {
 
                 if (isNew) {
                     console.log(`[mDNS] Discovered new peer: ${discoveredDeviceId} at ${discoveredIP}:${discoveredPort}`);
-                }
-                if (this.onPeerDiscovered) {
-                    this.onPeerDiscovered(peerInfo);
+                    if (this.onPeerDiscovered) {
+                        this.onPeerDiscovered(peerInfo);
+                    }
                 }
             }
         });

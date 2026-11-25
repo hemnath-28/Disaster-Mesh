@@ -11,7 +11,7 @@ export interface DashboardOptions {
     port: number;
     nodeDeviceId: string;
     storage: MessageStore;
-    respondToSos: (sosId: string, status: "DISPATCHED" | "STANDBY" | "RESOLVED", instructions: string, eta?: string) => boolean;
+    respondToSos: (sosId: string, status: "DISPATCHED" | "STANDBY" | "RESOLVED", instructions: string, eta?: string, rescuerId?: string) => boolean;
     broadcastBulletin: (hazardType: HazardType, announcement: string) => any;
     getActivePeers: () => string[];
     getRoutingTable: () => RouteEntry[];
@@ -123,7 +123,8 @@ export function startDashboardServer(options: DashboardOptions): http.Server {
                         action.sosId,
                         action.status || "DISPATCHED",
                         action.instructions || "Rescue team deployed",
-                        action.eta || "15 mins"
+                        action.eta || "15 mins",
+                        action.rescuerId
                     );
                     if (ok) {
                         const updated = options.storage.getSosAlert(action.sosId);

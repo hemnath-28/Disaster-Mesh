@@ -758,7 +758,8 @@ export function respondToSos(
     sosId: string,
     status: "DISPATCHED" | "STANDBY" | "RESOLVED",
     instructions: string,
-    eta?: string
+    eta?: string,
+    rescuerId?: string
 ): boolean {
     const alert = storage.getSosAlert(sosId);
     if (!alert) {
@@ -766,8 +767,9 @@ export function respondToSos(
         return false;
     }
 
+    const assignedRescuer = rescuerId?.trim() || DEVICE_ID;
     stats.rescueAcksSent++;
-    storage.updateSosStatus(sosId, status, DEVICE_ID, instructions);
+    storage.updateSosStatus(sosId, status, assignedRescuer, instructions);
     const updatedAlert = storage.getSosAlert(sosId);
     if (updatedAlert) meshEvents.emit("sos:upsert", updatedAlert);
 
@@ -775,7 +777,7 @@ export function respondToSos(
         type: "RESCUER_RESPONSE",
         sosId: sosId,
         status: status,
-        rescuerDeviceId: DEVICE_ID,
+        rescuerDeviceId: assignedRescuer,
         estimatedArrivalTime: eta || "15-20 mins",
         instructions: instructions
     });
@@ -788,7 +790,7 @@ export function respondToSos(
     const rescueAck: RescueAck = {
         type: "RESCUE_ACK",
         sosId: sosId,
-        rescuerDeviceId: DEVICE_ID,
+        rescuerDeviceId: assignedRescuer,
         victimDeviceId: alert.senderDeviceId,
         status: status,
         estimatedArrivalTime: eta || "15-20 mins",
